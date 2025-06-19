@@ -323,9 +323,64 @@ lime %>%
 
 #Perry Data:
 
-```{r Load perry data}
+```{r Load perry data, echo=FALSE, message=FALSE, warning=FALSE}}
 # Load Perry data
 
-perry <- read_csv("../data_do_not_push/")
+perry <- read_csv("../data_do_not_push/perry_soil_points_surface.csv") %>%
+  clean_names() %>%
+  select(label, type, x, y, lbc_1, lb_ceq, p_h_2, ca, k, mg, mn, p, zn, geometry)
 ```
+
+```{r}
+#wilcoxon:
+perry_wide <- perry %>%
+  select(label, type, all_of(nutrients)) %>%
+  pivot_wider(names_from = type, values_from = all_of(nutrients))  # gives e.g. ca_CID and ca_SPID
+
+wilcox_results <- map_dfr(nutrients, function(nutrient) {
+  # Create the two paired vectors
+  x <- perry_wide[[paste0(nutrient, "_CID")]]
+  y <- perry_wide[[paste0(nutrient, "_SPID")]]
+
+  # Remove any NA pairs
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+
+  # Wilcoxon signed-rank test (paired)
+  wt <- wilcox.test(x, y, paired = TRUE, exact = FALSE)
+
+  # Output a row
+  tibble(
+    nutrient = nutrient,
+    p_value = wt$p.value,
+    median_CID = median(x, na.rm = TRUE),
+    median_SPID = median(y, na.rm = TRUE),
+    W = wt$statistic
+  )
+})
+wilcox_results
+```
+
+```{r LMER}
+#do same but with lmer 
+lmer_perry_results <- map_dfr(nutrients, function(nutrient) {
+  formula <- as.formula(paste(nutrient, "~ type + (1 | label)"))
+  model <- lmer(formula, data = perry)
+  
+  anova_result <- anova(model)
+  
+  tibble(
+    nutrient = nutrient,
+    p_value = anova_result$`Pr(>F)`[1],
+    F_value = anova_result$`F value`[1],
+    df = anova_result$Df[1],
+    median_CID = median(perry_wide[[paste0(nutrient, "_CID")]], na.rm = TRUE),
+    median_SPID = median(perry_wide[[paste0(nutrient, "_SPID")]], na.rm = TRUE)
+  )
+})
+lmer_perry_results
+```
+
+
 
