@@ -1,0 +1,331 @@
+---
+title: "sampling_analysis_SP_C_06_18_25"
+format: html
+---
+###Load Libraries
+
+```{r load libraries}
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(stringr)
+library(dplyr)
+library(leaflet)
+library(sf)
+library(patchwork)
+library(purrr)
+library(lme4)
+library(lmerTest)
+```
+
+### Load Data:
+
+```{r data pull, echo=FALSE, message=FALSE, warning=FALSE}
+# Load the data
+lime <- read_csv("../data_do_not_push/2021 Liming Study Soil Data Compiled (lbs. A).csv") %>%
+# Clean the data
+  clean_names() %>%
+  #split "sample" column by type and site (0-4,is type, Site 1,2... is site)
+  separate(sample, into = c("type", "site"), sep = ", ") %>%
+  #make sure site rows are lowercase and _ instead of spaces:
+  mutate(site = tolower(site),
+         site = str_replace_all(site, " ", "_")) %>%
+  #group by site and the SAME lat long:
+  group_by(site, lat, long) %>%
+  arrange(lat, long) %>%
+  #filter out 4-8 sample types:
+  filter(type != "4-8") %>%
+  mutate(location = cur_group_id()) %>%   # unique id for lat lon
+  ungroup() %>%    
+  arrange(location) %>%
+  #add new column and copy over all 0-4 values, but change A and B to SP:
+  mutate(sampling_type = case_when(
+    type == "0-4" ~ "C",
+    type == "A" ~ "SP",
+    type == "B" ~ "SP",
+    TRUE ~ type
+  ))
+
+
+
+```
+
+#### Map Data:
+```{r}
+
+lime_sf <- lime %>%
+  st_as_sf(coords = c("long", "lat"), crs = 4326)  # WGS84 (lon/lat)
+
+#create leaflet plot of lime_sf with points colored by type and labelled by location:
+
+leaflet(lime_sf) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    color = ~case_when(
+      type == "0-4" ~ "red",
+      type == "A" ~ "green",
+      type == "B" ~ "pink"),
+    label = ~paste("Location:", location, "<br>Type:", type),
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.8
+  ) %>%
+  addLegend("bottomright", 
+            colors = c("red", "green", "pink"),
+            labels = c("0-4","A","B"),
+            title = "Sample Type") %>%
+  #change basemap to satellite:
+  addProviderTiles("Esri.WorldImagery")
+```
+```{r ANOVA assumptions check, warning=FALSE}
+# Check ANOVA assumptions: normality and homogeneity of variance
+#Ca
+# For normality
+plot(aov(ca ~ type, data = lime))  # Residuals vs Fitted + Q-Q plot
+# For equal variances
+car::leveneTest(ca ~ type, data = lime)
+#Mg
+plot(aov(mg ~ type, data = lime))  # Residuals vs Fitted + Q-Q plot
+car::leveneTest(mg ~ type, data = lime)
+#Zn
+plot(aov(zn ~ type, data = lime))  # Residuals vs Fitted + Q-Q plot
+car::leveneTest(zn ~ type, data = lime)
+```
+
+
+```{r sampling analysis, echo=FALSE, message=FALSE, warning=FALSE}
+#sample analysis
+#compare o-4, A, and B samples by location using a statistical test for each nutrient:
+
+# phosphorus (P)
+print("Phosphorus (P) Analysis")
+anova_p <- aov(p ~ type, data = lime)
+summary(anova_p)
+# potassium (K)
+print("Potassium (K) Analysis")
+anova_k <- aov(k ~ type, data = lime)
+summary(anova_k)
+# calcium (Ca)
+print("Calcium (Ca) Analysis")
+anova_ca <- aov(ca ~ type, data = lime)
+summary(anova_ca)
+# magnesium (Mg)
+print("Magnesium (Mg) Analysis")
+anova_mg <- aov(mg ~ type, data = lime)
+summary(anova_mg)
+# zinc (Zn)
+print("Zinc (Zn) Analysis")
+anova_zn <- aov(zn ~ type, data = lime)
+summary(anova_zn)
+# pH
+print("pH Analysis")
+anova_ph <- aov(p_h_2 ~ type, data = lime)
+summary(anova_ph)
+# lbc
+print("Lime Buffer Capacity (LBC) Analysis")
+anova_lbc <- aov(lbc_1 ~ type, data = lime)
+summary(anova_lbc)
+# lbc_eq
+print("Lime Buffer Capacity Equivalent (LBC Eq) Analysis")
+anova_lbc_eq <- aov(lb_ceq ~ type, data = lime)
+summary(anova_lbc_eq)
+```
+```{r}
+# Post-hoc tests for significant ANOVA results
+print("Ca Post-hoc Test")
+TukeyHSD(aov(ca ~ type, data = lime))
+print("Mg Post-hoc Test")
+TukeyHSD(aov(mg ~ type, data = lime))
+print("P Post-hoc Test")
+TukeyHSD(aov(zn ~ type, data = lime))
+
+```
+## Assumptions check:
+
+```{r assumptions check, echo=FALSE, message=FALSE, warning=FALSE}
+#check assummptions for t-test:
+# Normality check
+print("Normality Check for Nutrients by Sampling Type")
+
+shapiro.test(lime$ca[lime$sampling_type == "C"])
+
+shapiro.test(lime$ca[lime$sampling_type == "SP"])
+
+shapiro.test(lime$mg[lime$sampling_type == "C"])
+
+shapiro.test(lime$mg[lime$sampling_type == "SP"])
+
+shapiro.test(lime$p[lime$sampling_type == "C"])
+shapiro.test(lime$p[lime$sampling_type == "SP"])
+shapiro.test(lime$zn[lime$sampling_type == "C"])
+shapiro.test(lime$zn[lime$sampling_type == "SP"])
+shapiro.test(lime$p_h_2[lime$sampling_type == "C"])
+shapiro.test(lime$p_h_2[lime$sampling_type == "SP"])
+shapiro.test(lime$lbc_1[lime$sampling_type == "C"])
+shapiro.test(lime$lbc_1[lime$sampling_type == "SP"])
+shapiro.test(lime$lb_ceq[lime$sampling_type == "C"])
+shapiro.test(lime$lb_ceq[lime$sampling_type == "SP"])
+shapiro.test(lime$k[lime$sampling_type == "C"])
+shapiro.test(lime$k[lime$sampling_type == "SP"])
+
+
+
+# Variance check
+car::leveneTest(ca ~ sampling_type, data = lime)
+car::leveneTest(mg ~ sampling_type, data = lime)
+car::leveneTest(p ~ sampling_type, data = lime)
+car::leveneTest(zn ~ sampling_type, data = lime)
+car::leveneTest(p_h_2 ~ sampling_type, data = lime)
+car::leveneTest(lbc_1 ~ sampling_type, data = lime)
+car::leveneTest(lb_ceq ~ sampling_type, data = lime)
+car::leveneTest(k ~ sampling_type, data = lime)
+
+
+
+```
+All nutrients fail normality in both C and SP groups (all p-values < 0.05).
+
+Therefore, I should not use t-tests.
+
+Most nutrients pass homogeneity of variance, except for one (possibly p_h_2 or k), which had p = 0.02083.
+
+A test that takes into account for no normality:
+
+## Wilcoxon Rank Sum Tests (Mann–Whitney U):
+
+```{r Wilcoxon analysis}
+# nutrients <- c("ca", "mg", "zn", "p", "k", "p_h_2", "lbc_1", "lb_ceq")
+# 
+# wilcox_results <- lapply(nutrients, function(nutrient) {
+#   formula <- as.formula(paste(nutrient, "~ sampling_type"))
+#   test <- wilcox.test(formula, data = lime)
+#   
+#   data.frame(
+#     nutrient = nutrient,
+#     W = test$statistic,
+#     p_value = test$p.value,
+#     median_C = median(lime[[nutrient]][lime$sampling_type == "C"], na.rm = TRUE),
+#     median_SP = median(lime[[nutrient]][lime$sampling_type == "SP"], na.rm = TRUE)
+#   )
+# })
+# 
+# wilcox_df <- do.call(rbind, wilcox_results)
+# wilcox_df
+
+```
+
+
+```{r Wilcoxon test with nested locations}
+
+# Step 1: Average A and B to create one SP value per location
+lime_avg <- lime %>%
+  mutate(sampling_type = ifelse(type %in% c("A", "B"), "SP", sampling_type)) %>%
+  group_by(location, sampling_type) %>%
+  summarise(across(c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq), mean, na.rm = TRUE), .groups = "drop")
+
+# Step 2: Reshape so we can do paired comparisons
+lime_wide <- lime_avg %>%
+  pivot_wider(names_from = sampling_type, values_from = c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq))
+
+# Step 3: Paired Wilcoxon test for each nutrient
+nutrients <- c("ca", "k", "mg", "mn", "p", "zn", "p_h_2", "lbc_1", "lb_ceq")
+
+results <- map_dfr(nutrients, function(nutrient) {
+  C_col <- lime_wide[[paste0(nutrient, "_C")]]
+  SP_col <- lime_wide[[paste0(nutrient, "_SP")]]
+
+  # Paired test
+  test <- wilcox.test(C_col, SP_col, paired = TRUE, exact = FALSE)
+
+  tibble(
+    nutrient = nutrient,
+    p_value = test$p.value,
+    median_C = median(C_col, na.rm = TRUE),
+    median_SP = median(SP_col, na.rm = TRUE),
+    W = test$statistic
+  )
+})
+results
+
+```
+
+
+Most nutrients (except K and pH) show statistically significant differences between C and SP, with higher medians in C samples.
+
+This supports the idea that surface samples (SP) tend to underrepresent nutrient values compared to full cores (C) — which might influence lime or fertilizer recommendations.
+
+pH is not significantly different between the types — interesting and potentially important for lime recommendations since pH is often the direct driver.
+
+### Linear Mixed Effects Model:
+
+```{r}
+
+
+
+# Linear mixed-effects model to account for nested structure (calcium)
+
+#sum to zero contrasts
+
+lime_log<- lime %>%
+  mutate(across(c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq), log1p))
+
+options(contrasts = c("contr.sum", "contr.poly"))
+
+lmer_results <- map_dfr(nutrients, function(nutrient) {
+  formula <- as.formula(paste(nutrient, "~ sampling_type + (1 | location)"))
+  model <- lmer(formula, data = lime_log)
+  
+  anova_result <- anova(model)
+  
+  tibble(
+    nutrient = nutrient,
+    p_value = anova_result$`Pr(>F)`[1],
+    F_value = anova_result$`F value`[1],
+    df = anova_result$Df[1],
+    median_C = median(lime_avg[[paste0(nutrient, "_C")]], na.rm = TRUE),
+    median_SP = median(lime_avg[[paste0(nutrient, "_SP")]], na.rm = TRUE)
+  )
+})
+
+# Check normality of residuals for each nutrient
+
+lmer_results %>%
+  group_by(nutrient) %>%
+  do({
+    model <- lmer(as.formula(paste((.$nutrient), "~ sampling_type + (1 | location)")), data = lime_log)
+    shapiro_test <- shapiro.test(residuals(model))
+    tibble(nutrient = .$nutrient, p_value = shapiro_test$p.value)
+  })
+
+lmer_results
+```
+
+
+### Boxplots:
+
+```{r boxplots all nutrients}
+
+lime %>%
+  filter(sampling_type %in% c("C", "SP")) %>%
+  pivot_longer(cols = c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq),
+               names_to = "nutrient", values_to = "value") %>%
+  ggplot(aes(x = sampling_type, y = value, fill = sampling_type)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6) +
+  geom_jitter(width = 0.2, alpha = 0.2, size = 0.8) +
+  facet_wrap(~ nutrient, scales = "free_y") +
+  scale_fill_manual(values = c("C" = "#1f77b4", "SP" = "#ff7f0e")) +
+  labs(x = "Sampling Type", y = "Value", title = "Comparison of Nutrient Levels by Sampling Type") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+```
+
+
+#Perry Data:
+
+```{r Load perry data}
+# Load Perry data
+
+perry <- read_csv("../data_do_not_push/")
+```
+
