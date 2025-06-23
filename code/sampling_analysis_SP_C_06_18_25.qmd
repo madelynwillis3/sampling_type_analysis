@@ -265,7 +265,7 @@ pH is not significantly different between the types — interesting and potentia
 # Linear mixed-effects model to account for nested structure (calcium)
 
 #sum to zero contrasts
-
+#log:
 lime_log<- lime %>%
   mutate(across(c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq), log1p))
 
@@ -333,6 +333,9 @@ perry <- read_csv("../data_do_not_push/perry_soil_points_surface.csv") %>%
 
 ```{r}
 #wilcoxon:
+#log:
+  # perry_log <- perry %>%
+  #   mutate(across(c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq), log1p))
 perry_wide <- perry %>%
   select(label, type, all_of(nutrients)) %>%
   pivot_wider(names_from = type, values_from = all_of(nutrients))  # gives e.g. ca_CID and ca_SPID
@@ -364,6 +367,9 @@ wilcox_results
 
 ```{r LMER}
 #do same but with lmer 
+#log:
+  # perry_log <- perry %>%
+  #   mutate(across(c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq), log1p))
 lmer_perry_results <- map_dfr(nutrients, function(nutrient) {
   formula <- as.formula(paste(nutrient, "~ type + (1 | label)"))
   model <- lmer(formula, data = perry)
@@ -382,5 +388,167 @@ lmer_perry_results <- map_dfr(nutrients, function(nutrient) {
 lmer_perry_results
 ```
 
+### Formatting:
+```{r}
+# Helper function for significance stars
+sig_stars <- function(p) {
+  dplyr::case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ ""
+  )
+}
+
+# Liming Wilcoxon table
+liming_wilcox_table <- results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, median_C, median_SP, W, p_value, significance) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+# Liming LMER table
+liming_lmer_table <- lmer_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, F_value, p_value, significance) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+# Perry Wilcoxon table
+perry_wilcox_table <- wilcox_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, median_CID, median_SPID, W, p_value, significance) %>%
+  rename(median_C = median_CID, median_SP = median_SPID) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+# Perry LMER table
+perry_lmer_table <- lmer_perry_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, median_CID, median_SPID, F_value, p_value, significance) %>%
+  rename(median_C = median_CID, median_SP = median_SPID) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+# Print all tables using knitr::kable for neat output
+library(knitr)
+kable(liming_wilcox_table, caption = "Liming Study: Wilcoxon Signed-Rank Test")
+kable(liming_lmer_table, caption = "Liming Study: Linear Mixed-Effects Model (log)")
+kable(perry_wilcox_table, caption = "Perry Study: Wilcoxon Signed-Rank Test")
+kable(perry_lmer_table, caption = "Perry Study: Linear Mixed-Effects Model")
+```
+
+```{r}
+
+# ---- Define nutrients ----
+nutrients_log <- c("ca", "k", "mg", "mn", "p", "zn", "lbc_1", "lb_ceq")
+nutrients <- c(nutrients_log, "p_h_2") # keep pH last for reporting
+
+# ---- Helper for significance stars ----
+sig_stars <- function(p) {
+  dplyr::case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    TRUE      ~ ""
+  )
+}
+
+# ---- Log-transform nutrients except pH ----
+lime_log <- lime %>%
+  mutate(across(all_of(nutrients_log), log1p))
+perry_log <- perry %>%
+  mutate(across(all_of(nutrients_log), log1p))
+
+# ---- Liming: Wilcoxon (paired, log except pH) ----
+lime_avg_log <- lime_log %>%
+  mutate(sampling_type = ifelse(type %in% c("A", "B"), "SP", sampling_type)) %>%
+  group_by(location, sampling_type) %>%
+  summarise(across(all_of(nutrients), mean, na.rm = TRUE), .groups = "drop")
+
+lime_wide_log <- lime_avg_log %>%
+  pivot_wider(names_from = sampling_type, values_from = all_of(nutrients))
+
+liming_wilcox_results <- map_dfr(nutrients, function(nutrient) {
+  C_col <- lime_wide_log[[paste0(nutrient, "_C")]]
+  SP_col <- lime_wide_log[[paste0(nutrient, "_SP")]]
+  test <- wilcox.test(C_col, SP_col, paired = TRUE, exact = FALSE)
+  tibble(
+    nutrient = nutrient,
+    p_value = test$p.value,
+    median_C = median(C_col, na.rm = TRUE),
+    median_SP = median(SP_col, na.rm = TRUE),
+    W = test$statistic
+  )
+})
+
+# ---- Liming: LMER (log except pH) ----
+liming_lmer_results <- map_dfr(nutrients, function(nutrient) {
+  formula <- as.formula(paste(nutrient, "~ sampling_type + (1 | location)"))
+  model <- lmer(formula, data = lime_log)
+  anova_result <- anova(model)
+  tibble(
+    nutrient = nutrient,
+    p_value = anova_result$`Pr(>F)`[1],
+    F_value = anova_result$`F value`[1]
+  )
+})
+
+# ---- Perry: Wilcoxon (paired, log except pH) ----
+perry_wide_log <- perry_log %>%
+  select(label, type, all_of(nutrients)) %>%
+  pivot_wider(names_from = type, values_from = all_of(nutrients))
+
+perry_wilcox_results <- map_dfr(nutrients, function(nutrient) {
+  x <- perry_wide_log[[paste0(nutrient, "_CID")]]
+  y <- perry_wide_log[[paste0(nutrient, "_SPID")]]
+  complete_idx <- complete.cases(x, y)
+  x <- x[complete_idx]
+  y <- y[complete_idx]
+  wt <- wilcox.test(x, y, paired = TRUE, exact = FALSE)
+  tibble(
+    nutrient = nutrient,
+    p_value = wt$p.value,
+    median_CID = median(x, na.rm = TRUE),
+    median_SPID = median(y, na.rm = TRUE),
+    W = wt$statistic
+  )
+})
+
+# ---- Perry: LMER (log except pH) ----
+perry_lmer_results <- map_dfr(nutrients, function(nutrient) {
+  formula <- as.formula(paste(nutrient, "~ type + (1 | label)"))
+  model <- lmer(formula, data = perry_log)
+  anova_result <- anova(model)
+  tibble(
+    nutrient = nutrient,
+    p_value = anova_result$`Pr(>F)`[1],
+    F_value = anova_result$`F value`[1]
+  )
+})
+
+# ---- Format and print all tables ----
+liming_wilcox_table <- liming_wilcox_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, median_C, median_SP, W, p_value, significance) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+liming_lmer_table <- liming_lmer_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, F_value, p_value, significance) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+perry_wilcox_table <- perry_wilcox_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, median_CID, median_SPID, W, p_value, significance) %>%
+  rename(median_C = median_CID, median_SP = median_SPID) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+perry_lmer_table <- perry_lmer_results %>%
+  mutate(significance = sig_stars(p_value)) %>%
+  select(nutrient, F_value, p_value, significance) %>%
+  arrange(factor(nutrient, levels = nutrients))
+
+kable(liming_wilcox_table, caption = "Liming Study: Wilcoxon Signed-Rank Test (log-transformed except pH)")
+kable(liming_lmer_table, caption = "Liming Study: Linear Mixed-Effects Model (log-transformed except pH)")
+kable(perry_wilcox_table, caption = "Perry Study: Wilcoxon Signed-Rank Test (log-transformed except pH)")
+kable(perry_lmer_table, caption = "Perry Study: Linear Mixed-Effects Model (log-transformed except pH)")
+```
 
 
