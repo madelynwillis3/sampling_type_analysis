@@ -183,6 +183,9 @@ car::leveneTest(k ~ sampling_type, data = lime)
 
 
 ```
+
+
+
 All nutrients fail normality in both C and SP groups (all p-values < 0.05).
 
 Therefore, I should not use t-tests.
@@ -329,6 +332,45 @@ lime %>%
 perry <- read_csv("../data_do_not_push/perry_soil_points_surface.csv") %>%
   clean_names() %>%
   select(label, type, x, y, lbc_1, lb_ceq, p_h_2, ca, k, mg, mn, p, zn, geometry)
+```
+
+```{r Perry assumptions}
+
+# Define nutrient vectors
+nutrients_log <- c("ca", "k", "mg", "mn", "p", "zn", "lbc_1", "lb_ceq")
+nutrients <- c(nutrients_log, "p_h_2")
+
+# Log-transform all nutrients except pH
+perry_log <- perry %>%
+  mutate(across(all_of(nutrients_log), log1p))
+
+# Normality: Shapiro-Wilk test for each nutrient and group
+normality_results <- map_dfr(nutrients, function(nutrient) {
+  dat <- perry_log
+  c_val <- dat[[nutrient]][dat$type == "CID"]
+  sp_val <- dat[[nutrient]][dat$type == "SPID"]
+  tibble(
+    nutrient = nutrient,
+    group = c("CID", "SPID"),
+    p_value = c(shapiro.test(c_val)$p.value, shapiro.test(sp_val)$p.value)
+  )
+})
+
+print("Shapiro-Wilk Normality Test Results:")
+print(normality_results)
+
+# Homogeneity of variance: Levene's test for each nutrient
+variance_results <- map_dfr(nutrients, function(nutrient) {
+  dat <- perry_log
+  res <- car::leveneTest(as.formula(paste0(nutrient, " ~ type")), data = dat)
+  tibble(
+    nutrient = nutrient,
+    p_value = res$`Pr(>F)`[1]
+  )
+})
+
+print("Levene's Test for Homogeneity of Variance:")
+print(variance_results)
 ```
 
 ```{r}
