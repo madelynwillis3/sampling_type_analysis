@@ -16,6 +16,7 @@ library(patchwork)
 library(purrr)
 library(lme4)
 library(lmerTest)
+library(dbscan)
 ```
 
 ### Load Data:
@@ -50,11 +51,13 @@ lime <- read_csv("../data_do_not_push/2021 Liming Study Soil Data Compiled (lbs.
 
 ```
 
+
+
 #### Map Data:
 ```{r}
 
 lime_sf <- lime %>%
-  st_as_sf(coords = c("long", "lat"), crs = 4326)  # WGS84 (lon/lat)
+  st_as_sf(coords = c("long", "lat"), crs = 4326) # WGS84 (lon/lat)
 
 #create leaflet plot of lime_sf with points colored by type and labelled by location:
 
@@ -77,6 +80,117 @@ leaflet(lime_sf) %>%
   #change basemap to satellite:
   addProviderTiles("Esri.WorldImagery")
 ```
+### Per site analysis
+
+```{r Cluster by site}
+
+# Step 1: Convert lime to sf (CRS 4326 for original lat/lon)
+lime_sf <- lime %>%
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+# Step 2: Transform to UTM (meters) for distance-based clustering
+lime_utm <- st_transform(lime_sf, crs = 32617)  # UTM Zone 17N
+
+# Step 3: Extract coordinates for DBSCAN
+coords <- st_coordinates(lime_utm)
+
+# Step 4: Run DBSCAN clustering — try smaller eps (in meters)
+# eps = 10000 is 10km, adjust based on how spread out your points are
+clustering <- dbscan(coords, eps = 10000, minPts = 2)
+
+# Step 5: Attach clusters back to original (in degrees)
+lime_sf$cluster <- as.factor(clustering$cluster)  # back in CRS 4326
+
+# Step 6: Visualize in Leaflet
+leaflet(lime_sf) %>%
+  addProviderTiles(providers$Esri.NatGeoWorldMap) %>%
+  addCircleMarkers(
+    radius = 5,
+    color = ~colorFactor(rainbow(length(unique(lime_sf$cluster))), lime_sf$cluster)(cluster),
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    label = ~paste("Cluster:", cluster)
+  )
+
+
+```
+```{r}
+nutrients <- c("ca", "k", "mg", "mn", "p", "zn", "p_h_2", "lbc_1", "lb_ceq")
+
+run_tests_per_cluster <- function(df, nutrient) {
+  df <- df %>% filter(!is.na(.data[[nutrient]]))
+  if (n_distinct(df$sampling_type) < 2) return(NULL)  # Need both SP and C
+  
+  # Check normality per sampling_type
+  normality <- df %>%
+    group_by(sampling_type) %>%
+    summarise(p = shapiro.test(.data[[nutrient]])$p.value, .groups = "drop")
+  
+  use_t <- all(normality$p > 0.05)
+  
+  test_res <- if (use_t) {
+    t.test(df[[nutrient]] ~ df$sampling_type)
+  } else {
+    wilcox.test(df[[nutrient]] ~ df$sampling_type)
+  }
+  
+  tibble(
+    cluster = unique(df$cluster),
+    nutrient = nutrient,
+    test = ifelse(use_t, "t-test", "wilcox"),
+    p_value = test_res$p.value,
+    statistic = test_res$statistic,
+    median_C = median(df[[nutrient]][df$sampling_type == "C"], na.rm = TRUE),
+    median_SP = median(df[[nutrient]][df$sampling_type == "SP"], na.rm = TRUE)
+  )
+}
+
+results_by_cluster <- lime_sf %>%
+  group_by(cluster) %>%
+  group_map(~ map_dfr(nutrients, run_tests_per_cluster, df = .x), .keep = TRUE) %>%
+  bind_rows() %>%
+  arrange(nutrient)
+
+print(results_by_cluster)
+
+
+lime_long <- lime_sf %>%
+  st_drop_geometry() %>%  # drop geometry for plotting
+  pivot_longer(cols = c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq),
+               names_to = "nutrient",
+               values_to = "value") %>%
+  mutate(sampling_type = factor(sampling_type, levels = c("C", "SP")))
+
+# Create a named vector for cluster names
+cluster_names <- c(
+  "1" = "Lower Coastal Plains",
+  "2" = "Upper Coastal Plains",
+  "3" = "Piedmont",
+  "4" = "Valley and Ridge"
+)
+
+# Apply the renaming to lime_long (or whichever dataframe you use)
+lime_long <- lime_long %>%
+  mutate(cluster_name = cluster_names[as.character(cluster)]) %>%
+  mutate(cluster_name = factor(cluster_name, levels = cluster_names))  # keep order
+
+# Then use cluster_name instead of cluster in your ggplot:
+ggplot(lime_long, aes(x = interaction(sampling_type, cluster_name), y = value)) +
+  geom_boxplot(aes(color = sampling_type), alpha = 0.3, outlier.shape = NA) +
+  geom_jitter(aes(color = cluster_name), width = 0.2, alpha = 0.7, size = 1.5) +
+  facet_wrap(~ nutrient, scales = "free_y") +
+  labs(
+    x = "Sampling Type and Region",
+    y = "Nutrient Value",
+    title = "Nutrient Values by Sampling Type and Region",
+    color = "Region"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom")
+
+```
+
+
 ```{r ANOVA assumptions check, warning=FALSE}
 # Check ANOVA assumptions: normality and homogeneity of variance
 #Ca
