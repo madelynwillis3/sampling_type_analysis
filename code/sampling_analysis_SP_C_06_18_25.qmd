@@ -114,26 +114,32 @@ leaflet(lime_sf) %>%
 
 
 ```
-```{r}
+```{r log transformed (aside from pH) and analyzed based on clustered sites}
+# Define which nutrients to log-transform
 nutrients <- c("ca", "k", "mg", "mn", "p", "zn", "p_h_2", "lbc_1", "lb_ceq")
+nutrients_to_log <- setdiff(nutrients, "p_h_2")
 
+# Apply log1p transformation to selected columns
+lime_sf <- lime_sf %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.)))
+
+# Run your statistical tests as before
 run_tests_per_cluster <- function(df, nutrient) {
   df <- df %>% filter(!is.na(.data[[nutrient]]))
-  if (n_distinct(df$sampling_type) < 2) return(NULL)  # Need both SP and C
-  
-  # Check normality per sampling_type
+  if (n_distinct(df$sampling_type) < 2) return(NULL)
+
   normality <- df %>%
     group_by(sampling_type) %>%
     summarise(p = shapiro.test(.data[[nutrient]])$p.value, .groups = "drop")
-  
+
   use_t <- all(normality$p > 0.05)
-  
+
   test_res <- if (use_t) {
     t.test(df[[nutrient]] ~ df$sampling_type)
   } else {
     wilcox.test(df[[nutrient]] ~ df$sampling_type)
   }
-  
+
   tibble(
     cluster = unique(df$cluster),
     nutrient = nutrient,
@@ -153,15 +159,15 @@ results_by_cluster <- lime_sf %>%
 
 print(results_by_cluster)
 
-
+# Prepare long data for plotting
 lime_long <- lime_sf %>%
-  st_drop_geometry() %>%  # drop geometry for plotting
-  pivot_longer(cols = c(ca, k, mg, mn, p, zn, p_h_2, lbc_1, lb_ceq),
+  st_drop_geometry() %>%
+  pivot_longer(cols = all_of(nutrients),
                names_to = "nutrient",
                values_to = "value") %>%
   mutate(sampling_type = factor(sampling_type, levels = c("C", "SP")))
 
-# Create a named vector for cluster names
+# Name the clusters
 cluster_names <- c(
   "1" = "Lower Coastal Plains",
   "2" = "Upper Coastal Plains",
@@ -169,25 +175,23 @@ cluster_names <- c(
   "4" = "Valley and Ridge"
 )
 
-# Apply the renaming to lime_long (or whichever dataframe you use)
 lime_long <- lime_long %>%
   mutate(cluster_name = cluster_names[as.character(cluster)]) %>%
-  mutate(cluster_name = factor(cluster_name, levels = cluster_names))  # keep order
+  mutate(cluster_name = factor(cluster_name, levels = cluster_names))
 
-# Then use cluster_name instead of cluster in your ggplot:
+# Plot
 ggplot(lime_long, aes(x = interaction(sampling_type, cluster_name), y = value)) +
   geom_boxplot(aes(color = sampling_type), alpha = 0.3, outlier.shape = NA) +
   geom_jitter(aes(color = cluster_name), width = 0.2, alpha = 0.7, size = 1.5) +
   facet_wrap(~ nutrient, scales = "free_y") +
   labs(
     x = "Sampling Type and Region",
-    y = "Nutrient Value",
+    y = "Log-Transformed Nutrient Value (except pH)",
     title = "Nutrient Values by Sampling Type and Region",
     color = "Region"
   ) +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom")
-
 ```
 
 
@@ -590,13 +594,21 @@ kable(perry_wilcox_table, caption = "Perry Study: Wilcoxon Signed-Rank Test")
 kable(perry_lmer_table, caption = "Perry Study: Linear Mixed-Effects Model")
 ```
 
+### Log transform and test:
+
 ```{r}
-
-# ---- Define nutrients ----
+# ---- Define nutrient names ----
 nutrients_log <- c("ca", "k", "mg", "mn", "p", "zn", "lbc_1", "lb_ceq")
-nutrients <- c(nutrients_log, "p_h_2") # keep pH last for reporting
+nutrients <- c(nutrients_log, "p_h_2")  # pH remains untransformed
 
-# ---- Helper for significance stars ----
+# ---- Log-transform nutrients except pH ----
+lime_log <- lime %>%
+  mutate(across(all_of(nutrients_log), log1p))
+
+perry_log <- perry %>%
+  mutate(across(all_of(nutrients_log), log1p))
+
+# ---- Significance stars helper ----
 sig_stars <- function(p) {
   dplyr::case_when(
     p < 0.001 ~ "***",
@@ -606,11 +618,31 @@ sig_stars <- function(p) {
   )
 }
 
-# ---- Log-transform nutrients except pH ----
-lime_log <- lime %>%
-  mutate(across(all_of(nutrients_log), log1p))
-perry_log <- perry %>%
-  mutate(across(all_of(nutrients_log), log1p))
+# ---- Shapiro-Wilk test function ----
+shapiro_cluster_check <- function(df, nutrient_name, group_var) {
+  df %>%
+    filter(!is.na(.data[[nutrient_name]])) %>%
+    group_by(.data[[group_var]]) %>%
+    summarise(
+      p_value = shapiro.test(.data[[nutrient_name]])$p.value,
+      .groups = "drop"
+    ) %>%
+    mutate(
+      nutrient = nutrient_name,
+      group = .data[[group_var]],
+      sig = sig_stars(p_value)
+    )
+}
+
+# ---- Run normality tests ----
+log_normality_lime <- map_dfr(nutrients, ~ shapiro_cluster_check(lime_log, .x, "sampling_type"))
+log_normality_perry <- map_dfr(nutrients, ~ shapiro_cluster_check(perry_log, .x, "type"))
+
+# ---- Display results ----
+library(knitr)
+kable(log_normality_lime, caption = "Shapiro-Wilk Normality Test (Log-Transformed Nutrients + Raw pH) — Lime")
+kable(log_normality_perry, caption = "Shapiro-Wilk Normality Test (Log-Transformed Nutrients + Raw pH) — Perry")
+
 
 # ---- Liming: Wilcoxon (paired, log except pH) ----
 lime_avg_log <- lime_log %>%
