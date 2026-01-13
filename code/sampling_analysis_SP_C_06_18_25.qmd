@@ -373,9 +373,9 @@ results
 
 Most nutrients (except K and pH) show statistically significant differences between C and SP, with higher medians in C samples.
 
-This supports the idea that surface samples (SP) tend to underrepresent nutrient values compared to full cores (C) — which might influence lime or fertilizer recommendations.
+This supports the idea that single points (SP) tend to underrepresent nutrient values compared to composite (C), which might influence lime or fertilizer recommendations.
 
-pH is not significantly different between the types — interesting and potentially important for lime recommendations since pH is often the direct driver.
+pH is not significantly different between the types... interesting and potentially important for lime recommendations since pH is often the direct driver.
 
 ### Linear Mixed Effects Model:
 
