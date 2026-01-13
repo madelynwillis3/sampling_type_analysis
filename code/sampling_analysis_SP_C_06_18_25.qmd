@@ -17,6 +17,9 @@ library(purrr)
 library(lme4)
 library(lmerTest)
 library(dbscan)
+library(broom)
+library(scales)
+
 ```
 
 ### Load Data:
@@ -195,6 +198,9 @@ ggplot(lime_long, aes(x = interaction(sampling_type, cluster_name), y = value)) 
 
 # Composite samples have tighter distibutions, as to be expected.
 ```
+
+
+
 ### ANOVA assumptions check:
 
 ```{r ANOVA assumptions check, warning=FALSE}
@@ -444,6 +450,8 @@ lime %>%
 ```
 
 
+
+
 #Perry Data:
 
 ```{r Load perry data, echo=FALSE, message=FALSE, warning=FALSE}}
@@ -492,6 +500,400 @@ variance_results <- map_dfr(nutrients, function(nutrient) {
 print("Levene's Test for Homogeneity of Variance:")
 print(variance_results)
 ```
+
+
+# Perry To depth vs horizon based sampling
+
+```{r}
+
+perry_fp <- read.csv("../data_do_not_push/Perry_full_profile_points.csv")
+#Point_ID has point label in it. 
+perry_Ap_hz_results <- read.csv("../data_do_not_push/Perry_Ap_hz_results.csv")
+#crop data to columns 1-11 and rows 8 to 105:
+perry_Ap_hz_results <- perry_Ap_hz_results[8:105, 1:11] %>%
+  #make row 8 the header:
+  janitor::row_to_names(row_number = 1) %>%
+  clean_names()
+# Extract Point_ID from the sample column
+perry_Ap_hz_results_parsed <- perry_Ap_hz_results %>%
+  # split "230045 - P1 - Ap" into parts
+  separate(sample,
+           into = c("sample_id_lab", "Point_ID", "hz"),
+           sep = "\\s*-\\s*",
+           remove = FALSE,
+           extra = "merge",  # if there are extra dashes later, keep them in hz
+           fill = "right") %>%
+  mutate(
+    sample_id_lab = str_trim(sample_id_lab),
+    Point_ID      = str_trim(Point_ID),
+    hz            = str_trim(hz)
+  )
+
+perry_fp_merged <- perry_Ap_hz_results_parsed %>%
+  left_join(perry_fp, by = "Point_ID") %>%
+  relocate(Point_ID, sample, sample_id_lab, hz, .before = 1) %>%
+  mutate(across(c(lbc_1, lb_ceq, p_h_2, ca, k, mg, mn, p, zn), readr::parse_number))
+
+#now datasets are merged. Now to make Ap comparison against Perry surface.
+soil_vars <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+# ---- Filter FP: Ap/Ap1/^Ap but NOT Ap2 ----
+perry_fp_ap <- perry_fp_merged %>%
+  mutate(hz = str_trim(hz)) %>%
+  filter(str_detect(hz, "^Ap"), !str_detect(hz, "^Ap2\\b")) %>%
+  mutate(dataset = "Full profile (Ap/Ap1)") %>%
+  select(dataset, Point_ID, hz, POINT_X, POINT_Y, all_of(soil_vars))
+
+# ---- Surface ----
+perry_surface <- perry %>%
+  mutate(dataset = "Surface") %>%
+  select(dataset, label, type, all_of(soil_vars), x, y, geometry) %>%
+  #remove type = CID
+  filter(type != "CID") %>%
+  #remove label points 1,23,24,34,35,36,46,60,73:
+  filter(!label %in% c(1,23,24,34,35,36,46,60,73))
+
+# ---- Long format ----
+plot_df <- bind_rows(
+  perry_surface %>% pivot_longer(all_of(soil_vars), names_to = "nutrient", values_to = "value"),
+  perry_fp_ap     %>% pivot_longer(all_of(soil_vars), names_to = "nutrient", values_to = "value")
+) %>%
+  filter(!is.na(value)) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = soil_vars),
+    dataset  = factor(dataset, levels = c("Surface", "Full profile (Ap/Ap1)")),
+    # log-transform everything except pH; set non-positive values to NA for log vars
+    value_plot = case_when(
+      nutrient == "p_h_2" ~ as.numeric(value),
+      as.numeric(value) > 0 ~ log10(as.numeric(value)),
+      TRUE ~ NA_real_
+    ),
+    y_lab = if_else(nutrient == "p_h_2", "value", "log10(value)")
+  ) %>%
+  filter(!is.na(value_plot))
+
+# ---- Rainbow palette per nutrient ----
+nutrient_cols <- setNames(hue_pal()(length(soil_vars)), soil_vars)
+
+
+#Find p-value of differences between ap and surface:
+wilcox_tbl <- plot_df %>%
+  group_by(nutrient) %>%
+  summarise(
+    n_surface = sum(dataset == "Surface"),
+    n_fp      = sum(dataset == "Full profile (Ap/Ap1)"),
+    test      = list(wilcox.test(value_plot ~ dataset, data = cur_data(), exact = FALSE)),
+    .groups   = "drop"
+  ) %>%
+  mutate(tidy = purrr::map(test, broom::tidy)) %>%
+  tidyr::unnest(tidy) %>%
+  select(nutrient, n_surface, n_fp, statistic, p.value)
+
+wilcox_tbl
+# 1) Compute p-values per nutrient (using the same transformed values you plotted)
+pvals_df <- plot_df %>%
+  group_by(nutrient) %>%
+  summarise(
+    p.value = wilcox.test(value_plot ~ dataset, data = cur_data(), exact = FALSE)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p_label = paste0("Wilcoxon p = ", signif(p.value, 3))
+  )
+
+# 2) Make a per-facet y-position (near the top), so labels don't overlap the boxes
+ypos_df <- plot_df %>%
+  group_by(nutrient) %>%
+  summarise(
+    y = max(value_plot, na.rm = TRUE) * 0.95,  # near top
+    .groups = "drop"
+  )
+
+ann_df <- left_join(pvals_df, ypos_df, by = "nutrient") %>%
+  mutate(
+    x = 1.5  # midpoint between the two boxplots
+  )
+
+# 3) Re-plot with annotations
+ggplot(plot_df, aes(x = dataset, y = value_plot, fill = nutrient)) +
+  geom_boxplot(width = 0.7, outlier.alpha = 0.35) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = nutrient_cols, guide = "none") +
+  geom_text(
+  data = ann_df,
+  aes(x = -Inf, y = Inf, label = p_label),
+  inherit.aes = FALSE,
+  hjust = -0.1, vjust = 1.2,
+  size = 3.5, fontface = "bold"
+) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Surficial (0–15 cm) Samples vs Ap Horizon Depth Sampling — log10-transformed (except pH)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 25, hjust = 1)
+  )
+
+```
+
+```{r}
+#spatial comparison between ap and surface points:
+# Surface SPID only (as you said)
+surf <- perry_surface
+
+# Surface coords are lon/lat
+surf_sf <- st_as_sf(surf, coords = c("x","y"), crs = 4326) %>%
+  st_transform(26917)   # UTM 17N meters (good for Perry)
+
+# FP POINT_X/POINT_Y are Web Mercator meters
+fp_sf <- st_as_sf(perry_fp_ap, coords = c("POINT_X","POINT_Y"), crs = 3857) %>%
+  st_transform(st_crs(surf_sf))
+
+# Nearest neighbor matching
+nn_idx <- st_nearest_feature(fp_sf, surf_sf)
+
+pairs <- fp_sf %>%
+  mutate(nn = nn_idx) %>%
+  bind_cols(
+    st_drop_geometry(surf_sf[nn_idx, ]) %>%
+      rename_with(~ paste0(.x, "_surf"))
+  ) %>%
+  mutate(
+    dist_m = as.numeric(st_distance(geometry, st_geometry(surf_sf)[nn_idx], by_element = TRUE))
+  )
+
+# sanity check distances
+summary(pairs$dist_m)
+
+
+thresh <- 20  # try 25, 50, 100 as sensitivity
+pairs_use <- pairs %>% filter(dist_m <= thresh)
+
+tests <- map_dfr(soil_vars, \(v){
+  df <- pairs_use %>%
+    transmute(
+      nutrient = v,
+      fp = .data[[v]],
+      surf = .data[[paste0(v, "_surf")]]
+    ) %>% filter(!is.na(fp), !is.na(surf))
+
+  tibble(
+    nutrient = v,
+    n_pairs = nrow(df),
+    p_value = if(nrow(df) >= 5) wilcox.test(df$fp, df$surf, paired = TRUE, exact = FALSE)$p.value else NA_real_,
+    median_diff = median(df$fp - df$surf, na.rm = TRUE)
+  )
+})
+
+tests
+
+#distance weighting comparison:
+
+soil_vars <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+# -------------------------
+# 1) Clean + build sf layers
+# -------------------------
+
+# Surface: SPID only, keep coords + nutrients
+surf_clean <- perry %>%
+  filter(type == "SPID") %>%
+  select(label, x, y, all_of(soil_vars)) %>%
+  mutate(across(all_of(soil_vars), as.numeric)) %>%
+  filter(!is.na(x), !is.na(y))
+
+# lon/lat -> UTM meters for IDW
+surf_sf <- st_as_sf(surf_clean, coords = c("x","y"), crs = 4326) %>%
+  st_transform(26917)  # UTM 17N (meters) for Perry area
+
+# FP Ap/Ap1 points with POINT_X/Y (Web Mercator)
+fp_clean <- perry_fp_merged %>%
+  mutate(hz = str_trim(hz)) %>%
+  filter(str_detect(hz, "^Ap"), !str_detect(hz, "^Ap2\\b")) %>%
+  select(Point_ID, hz, POINT_X, POINT_Y, all_of(soil_vars)) %>%
+  mutate(across(all_of(soil_vars), as.numeric)) %>%
+  filter(!is.na(POINT_X), !is.na(POINT_Y))
+
+fp_sf <- st_as_sf(fp_clean, coords = c("POINT_X","POINT_Y"), crs = 3857) %>%
+  st_transform(st_crs(surf_sf))
+
+# -------------------------
+# 2) IDW function (no kriging needed)
+# -------------------------
+idw_predict_at_fp <- function(values_vec, power = 2, max_dist = 200, min_n = 3) {
+  # distances FP x Surface (meters)
+  D <- st_distance(fp_sf, surf_sf) %>% as.matrix()
+  D <- units::drop_units(D)
+
+  preds <- rep(NA_real_, nrow(fp_sf))
+
+  for (i in seq_len(nrow(fp_sf))) {
+    d <- D[i, ]
+    idx <- which(d > 0 & d <= max_dist & !is.na(values_vec))
+    if (length(idx) < min_n) next
+    w <- 1 / (d[idx]^power)
+    preds[i] <- sum(w * values_vec[idx]) / sum(w)
+  }
+  preds
+}
+
+# -------------------------
+# 3) Run IDW per nutrient + test FP vs IDW(surface)
+# -------------------------
+surf_vals <- st_drop_geometry(surf_sf)
+
+power <- 1
+max_dist <- 100  # try 100, 200, 300 as sensitivity
+min_n <- 3
+
+idw_results <- map_dfr(soil_vars, \(v) {
+  pred <- idw_predict_at_fp(surf_vals[[v]], power = power, max_dist = max_dist, min_n = min_n)
+  obs  <- st_drop_geometry(fp_sf)[[v]]
+
+  df <- tibble(
+    nutrient = v,
+    fp_obs = obs,
+    surf_idw = pred
+  ) %>% filter(!is.na(fp_obs), !is.na(surf_idw)) %>%
+    mutate(diff = fp_obs - surf_idw)
+
+  tibble(
+    nutrient = v,
+    n_pairs = nrow(df),
+    median_diff = median(df$diff, na.rm = TRUE),
+    rmse = sqrt(mean((df$diff)^2, na.rm = TRUE)),
+    p_value = if (nrow(df) >= 5) wilcox.test(df$diff, mu = 0, exact = FALSE)$p.value else NA_real_
+  )
+})
+
+idw_results
+#K and Mg did not show significant median differences, indicating stronger agreement between surface and Ap measurements for these nutrients.
+library(epiR)
+check_agreement <- function(nutrient_name) {
+  pred <- idw_pred(surf_vals[[nutrient_name]], R = 100, power = 1, min_n = 2)
+  obs  <- fp_vals[[nutrient_name]]
+
+  df <- tibble(obs = obs, pred = pred) %>%
+    filter(!is.na(obs), !is.na(pred))
+
+  ccc <- epi.ccc(df$pred, df$obs)$rho.c[1]  # concordance correlation
+
+  tibble(
+    nutrient = nutrient_name,
+    n = nrow(df),
+    cor = cor(df$pred, df$obs),
+    ccc = ccc,
+    rmse = sqrt(mean((df$obs - df$pred)^2)),
+    median_diff = median(df$obs - df$pred)
+  )
+}
+
+c <- bind_rows(check_agreement("k"), check_agreement("mg"))
+c
+#no actual agreement. crap.can't use K or Mg. 
+```
+### Sensitivity analysis:
+
+```{r}
+library(sf)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(units)
+
+soil_vars <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+# Choose sensitivity settings
+radii  <- c(50, 75, 100, 150, 200)   # meters
+powers <- c(1, 2)
+min_n  <- 2
+
+# distances FP x Surface (meters)
+D <- st_distance(fp_sf, surf_sf) %>% as.matrix()
+D <- units::drop_units(D)
+
+surf_vals <- st_drop_geometry(surf_sf)
+fp_vals   <- st_drop_geometry(fp_sf)
+
+idw_pred <- function(values_vec, R, power, min_n = 2, eps = 1e-6) {
+  preds <- rep(NA_real_, nrow(fp_sf))
+  for (i in seq_len(nrow(fp_sf))) {
+    d <- D[i, ]
+    idx <- which(d <= R & !is.na(values_vec) & d > 0)
+    if (length(idx) < min_n) next
+    w <- 1 / ((d[idx] + eps)^power)
+    preds[i] <- sum(w * values_vec[idx]) / sum(w)
+  }
+  preds
+}
+
+# Run sensitivity grid
+sens_tbl <- expand_grid(max_dist = radii, power = powers, nutrient = soil_vars) %>%
+  mutate(
+    surf_idw = pmap(list(nutrient, max_dist, power), \(nutrient, max_dist, power) {
+      idw_pred(surf_vals[[nutrient]], R = max_dist, power = power, min_n = min_n)
+    }),
+    fp_obs = map(nutrient, \(nutrient) fp_vals[[nutrient]])
+  ) %>%
+  mutate(
+    df = map2(fp_obs, surf_idw, \(obs, pred) {
+      tibble(fp_obs = obs, surf_idw = pred) %>%
+        filter(!is.na(fp_obs), !is.na(surf_idw)) %>%
+        mutate(diff = fp_obs - surf_idw)
+    })
+  ) %>%
+  mutate(
+    n_pairs = map_int(df, nrow),
+    median_diff = map_dbl(df, ~ median(.x$diff, na.rm = TRUE)),
+    rmse = map_dbl(df, ~ sqrt(mean((.x$diff)^2, na.rm = TRUE))),
+    p_value = map_dbl(df, ~ if (nrow(.x) >= 5) wilcox.test(.x$diff, mu = 0, exact = FALSE)$p.value else NA_real_)
+  ) %>%
+  select(max_dist, power, nutrient, n_pairs, median_diff, rmse, p_value)
+
+sens_tbl
+
+ggplot(sens_tbl, aes(x = max_dist, y = median_diff, group = factor(power), linetype = factor(power))) +
+  geom_hline(yintercept = 0, alpha = 0.4) +
+  geom_line() +
+  geom_point(aes(size = n_pairs)) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  scale_x_continuous(breaks = sort(unique(sens_tbl$max_dist))) +
+  labs(
+    x = "IDW search radius (m)",
+    y = "Median(FP Ap − IDW(surface))",
+    linetype = "IDW power",
+    size = "Matched FP points (n)",
+    title = "IDW sensitivity: FP Ap vs distance-weighted surface estimates",
+    subtitle = "Points sized by n_pairs; lines compare power=1 vs power=2"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold")
+  )
+
+ggplot(sens_tbl, aes(x = max_dist, y = rmse, group = factor(power), linetype = factor(power))) +
+  geom_line() +
+  geom_point(aes(size = n_pairs)) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  scale_x_continuous(breaks = sort(unique(sens_tbl$max_dist))) +
+  labs(
+    x = "IDW search radius (m)",
+    y = "RMSE(FP Ap − IDW(surface))",
+    linetype = "IDW power",
+    size = "Matched FP points (n)",
+    title = "IDW sensitivity: mismatch magnitude vs radius"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(strip.text = element_text(face = "bold"))
+#dist = 100m best, power 1 best
+```
+
+
+
 
 ```{r}
 #wilcoxon:
