@@ -509,6 +509,11 @@ print(variance_results)
 perry_fp <- read.csv("../data_do_not_push/Perry_full_profile_points.csv")
 #Point_ID has point label in it. 
 perry_Ap_hz_results <- read.csv("../data_do_not_push/Perry_Ap_hz_results.csv")
+
+#add depths to dataset:
+depths <- read.csv("../data_do_not_push/Perry_FP_Ap_with_depths_cm.csv") %>%
+  clean_names()
+
 #crop data to columns 1-11 and rows 8 to 105:
 perry_Ap_hz_results <- perry_Ap_hz_results[8:105, 1:11] %>%
   #make row 8 the header:
@@ -533,17 +538,69 @@ perry_fp_merged <- perry_Ap_hz_results_parsed %>%
   left_join(perry_fp, by = "Point_ID") %>%
   relocate(Point_ID, sample, sample_id_lab, hz, .before = 1) %>%
   mutate(across(c(lbc_1, lb_ceq, p_h_2, ca, k, mg, mn, p, zn), readr::parse_number))
+    #merge in depths by perry_fp_merged$sample_id_lab and depths$sample_id_lab
+          depths_clean <- depths %>%
+            clean_names() %>%
+            transmute(
+              Point_ID = str_trim(point),                 # rename to match perry_fp_merged
+              sample_id_lab = as.character(sample_id_lab) %>% str_trim(),
+              hz = str_trim(horizon),                     # rename to match perry_fp_merged
+              observational_method,
+              potential_series_in_progress,
+              to_depth_cm = str_trim(to_depth_cm)
+            ) %>%
+            # parse "0-30" into numeric columns
+            separate(
+              to_depth_cm,
+              into = c("top_cm", "bottom_cm"),
+              sep = "\\s*-\\s*",
+              remove = FALSE,
+              fill = "right"
+            ) %>%
+            mutate(
+              top_cm = readr::parse_number(top_cm),
+              bottom_cm = readr::parse_number(bottom_cm)
+            )
+          
+          # 2) Make sure perry_fp_merged key columns are comparable
+          perry_fp_merged2 <- perry_fp_merged %>%
+            mutate(
+              sample_id_lab = as.character(sample_id_lab) %>% str_trim(),
+              Point_ID = str_trim(Point_ID),
+              hz = str_trim(hz)
+            )
+          
+          # 3) (Optional) sanity check: how many match on sample_id_lab?
+          perry_fp_merged2 %>%
+            distinct(sample_id_lab) %>%
+            left_join(depths_clean %>% distinct(sample_id_lab), by = "sample_id_lab") %>%
+            summarise(n_fp = n(), n_matched = sum(!is.na(sample_id_lab)))
+          
+          # 4) Join depths in (best key = sample_id_lab; backup keys are Point_ID + hz)
+          perry_fp_merged_wdepth <- perry_fp_merged2 %>%
+            left_join(
+              depths_clean %>%
+                select(sample_id_lab, Point_ID, hz, observational_method,
+                       potential_series_in_progress, to_depth_cm, top_cm, bottom_cm),
+              by = "sample_id_lab"
+            )
+          
+          # 5) Put depth columns in a nice spot
+          perry_fp_merged_wdepth <- perry_fp_merged_wdepth %>%
+            relocate(to_depth_cm, top_cm, bottom_cm, .after = hz.x)
+perry_fp_merged <-perry_fp_merged_wdepth    
 
 #now datasets are merged. Now to make Ap comparison against Perry surface.
 soil_vars <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
 
 # ---- Filter FP: Ap/Ap1/^Ap but NOT Ap2 ----
 perry_fp_ap <- perry_fp_merged %>%
-  mutate(hz = str_trim(hz)) %>%
-  filter(str_detect(hz, "^Ap"), !str_detect(hz, "^Ap2\\b")) %>%
+  mutate(hz = str_trim(hz.x)) %>%
+  # filter(str_detect(hz, "^Ap"), !str_detect(hz, "^Ap2\\b")) %>%
+  #filter where bottom_cm is less than or equal to 18 and where top_cm is 0:
+  filter(bottom_cm <= 18, top_cm == 0) %>%
   mutate(dataset = "Full profile (Ap/Ap1)") %>%
-  select(dataset, Point_ID, hz, POINT_X, POINT_Y, all_of(soil_vars))
-
+  select(dataset, Point_ID.x, hz.x, POINT_X, POINT_Y, all_of(soil_vars))
 # ---- Surface ----
 perry_surface <- perry %>%
   mutate(dataset = "Surface") %>%
@@ -795,6 +852,7 @@ c <- bind_rows(check_agreement("k"), check_agreement("mg"))
 c
 #no actual agreement. crap.can't use K or Mg. 
 ```
+
 ### Sensitivity analysis:
 
 ```{r}
