@@ -1,0 +1,1098 @@
+  ---
+title: "sampling_analysis_SP_C_06_18_25"
+format: html
+---
+###Load Libraries
+
+```{r load libraries}
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(stringr)
+library(dplyr)
+library(leaflet)
+library(sf)
+library(patchwork)
+library(purrr)
+library(lme4)
+library(lmerTest)
+library(dbscan)
+library(broom)
+library(scales)
+library(car)
+library(kableExtra)
+```
+
+
+### Load + Clean Data:
+
+```{r data pull, echo=FALSE, message=FALSE, warning=FALSE}
+# -----------------------------
+# Load + clean to analysis-ready
+# -----------------------------
+
+nutrients <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+lime_clean <- read_csv("../data_do_not_push/2021 Liming Study Soil Data Compiled (lbs. A).csv") %>%
+  clean_names() %>%
+  separate(sample, into = c("type", "sample_site"), sep = ",\\s*", remove = TRUE) %>%
+  mutate(
+    # standardize site label
+    sample_site = str_squish(sample_site),
+    sample_site = str_to_lower(sample_site),
+    sample_site = str_replace_all(sample_site, "\\s+", "_"),
+
+    # standardize type labels
+    type = str_squish(type),
+
+    # classify sampling category + depth
+    sampling_class = case_when(
+      type %in% c("A","B") ~ "SP",
+      type %in% c("0-4","4-8") ~ "C",
+      TRUE ~ NA_character_
+    ),
+    depth = case_when(
+      type == "0-4" ~ "0-4",
+      type == "4-8" ~ "4-8",
+      type %in% c("A","B") ~ NA_character_,
+      TRUE ~ NA_character_
+    ),
+
+    # replicate id for SP
+    sp_rep = case_when(
+      type == "A" ~ "A",
+      type == "B" ~ "B",
+      TRUE ~ NA_character_
+    ),
+
+    # composite depth label (useful later)
+    comp_depth = case_when(
+      sampling_class == "C" ~ depth,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  # create a stable location id (site + sample site + coords)
+  group_by(site, sample_site, lat, long) %>%
+  mutate(location_id = cur_group_id()) %>%
+  ungroup() %>%
+  # keep only relevant types
+  filter(type %in% c("0-4","4-8","A","B")) %>%
+  # make key factors ordered
+  mutate(
+    sampling_class = factor(sampling_class, levels = c("SP","C")),
+    comp_depth = factor(comp_depth, levels = c("0-4","4-8")),
+    sp_rep = factor(sp_rep, levels = c("A","B"))
+  )
+
+# Long format for plotting / modeling
+lime_long <- lime_clean %>%
+  pivot_longer(cols = all_of(nutrients), names_to = "nutrient", values_to = "value") %>%
+  mutate(nutrient = factor(nutrient, levels = nutrients))
+
+```
+
+### Exploratory Plots
+
+```{r}
+#distribution curves of 0-4 comps vs 4-8 comps vs SP A and B (A and Bs can be together)
+nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
+
+nutrient_names <- c(
+  "ca"     = "Calcium (Ca)",
+  "k"      = "Potassium (K)",
+  "mg"     = "Magnesium (Mg)",
+  "mn"     = "Manganese (Mn)",
+  "p"      = "Phosphorus (P)",
+  "zn"     = "Zinc (Zn)",
+  "p_h_2"  = "pH",
+  "lbc_1"  = "Lime Buffer Capacity (LBC)",
+  "lb_ceq" = "Lime Buffer Capacity Equivalent (LBCeq)"
+)
+
+lime_plot <- lime %>%
+  # log1p everything except pH (this is the key change)
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    sampling_type3 = case_when(
+      type == "0-4" ~ "Composite 0–10 cm",
+      type == "4-8" ~ "Composite 10-20 cm",
+      type %in% c("A","B") ~ "Single Point (A+B)",
+      TRUE ~ NA_character_
+    ),
+    sampling_type3 = factor(
+      sampling_type3,
+      levels = c("Composite 0–10 cm", "Composite 10-20 cm", "Single Point (A+B)")
+    ),
+    nutrient = dplyr::recode(nutrient, !!!nutrient_names),
+    nutrient = factor(nutrient, levels = unname(nutrient_names))
+  ) %>%
+  filter(!is.na(sampling_type3), !is.na(value))
+
+p_den <- ggplot(lime_plot, aes(x = value, fill = sampling_type3)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ nutrient, scales = "free") +
+  scale_fill_manual(
+    values = c(
+      "Composite 0–10 cm" = "#1f77b4",
+      "Composite 10-20 cm" = "#2ca02c",
+      "Single Point (A+B)" = "#ff7f0e"
+    ),
+    na.translate = FALSE
+  ) +
+  labs(
+    x = "Value (log1p-transformed except pH)",
+    y = "Density",
+    title = "Density Plots of Bermuda Hay Grassland Soil Nutrients by Sampling Type",
+    fill = "Sampling Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+p_den
+
+
+ggsave("../output_do_not_push/nutrient_density_plots_by_sampling_type.png",
+       p_den, width = 12, height = 8, dpi = 300, units = "in", limitsize = FALSE)
+
+```
+
+```{r}
+nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
+
+lime_norm <- lime %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    group = case_when(
+      type == "0-4" ~ "Composite 0–4",
+      type == "4-8" ~ "Composite 4–8",
+      type == "A"   ~ "SP A",
+      type == "B"   ~ "SP B",
+      TRUE ~ NA_character_
+    ),
+    group = factor(group,
+                   levels = c("Composite 0–4","Composite 4–8","SP A","SP B"))
+  ) %>%
+  filter(!is.na(group), !is.na(value))
+normality_3types <- lime_norm %>%
+  group_by(nutrient, group) %>%
+  summarise(
+    n = n(),
+    shapiro_p = ifelse(n >= 3,
+                       shapiro.test(value)$p.value,
+                       NA_real_),
+    .groups = "drop"
+  )
+normality_wide <- normality_3types %>%
+  pivot_wider(names_from = group, values_from = shapiro_p)
+
+normality_wide
+normality_3types %>%
+  group_by(group) %>%
+  summarise(percent_normal = mean(shapiro_p > 0.05, na.rm = TRUE))
+#none are normal. 0 out of 9 for almost all are abnormal
+```
+
+### Wilcoxon Rank Tests on Forage Sites
+
+```{r}
+#run wilcoxon rank tests on all comparison pairs for all nutrient with one table output per nutrient. rows would be the sites and bottom row would be combined sites, and columns would be the comparison pairs (SP A vs SP B, SP A vs C 0-4, SP A vs C 4-8, SP B vs C 0-4, SP B vs C 4-8, C 0-4 vs C 4-8)
+
+# ---- helper: p-value -> stars ----
+p_stars <- function(p) {
+  case_when(
+    is.na(p)        ~ "",
+    p < 0.001       ~ "***",
+    p < 0.01        ~ "**",
+    p < 0.05        ~ "*",
+    p < 0.1         ~ ".",
+    TRUE            ~ ""
+  )
+}
+
+# ---- build long table with group + transformed value ----
+nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+
+lime_wilcox <- lime_clean %>%
+  pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value_raw") %>%
+  mutate(
+    value = if_else(nutrient == "p_h_2", value_raw, log1p(value_raw)),
+    group = case_when(
+      type == "A"   ~ "SP A",
+      type == "B"   ~ "SP B",
+      type == "0-4" ~ "C 0–4",
+      type == "4-8" ~ "C 4–8",
+      TRUE ~ NA_character_
+    ),
+    group = factor(group, levels = c("SP A","SP B","C 0–4","C 4–8"))
+  ) %>%
+  filter(!is.na(group), !is.na(value))
+
+pairs <- list(
+  c("SP A","SP B"),
+  c("SP A","C 0–4"),
+  c("SP A","C 4–8"),
+  c("SP B","C 0–4"),
+  c("SP B","C 4–8"),
+  c("C 0–4","C 4–8")
+)
+pair_names <- c(
+  "SP A vs SP B",
+  "SP A vs C 0–4",
+  "SP A vs C 4–8",
+  "SP B vs C 0–4",
+  "SP B vs C 4–8",
+  "C 0–4 vs C 4–8"
+)
+
+run_wilcox_pairs <- function(df_site_nutrient) {
+  map2_dfr(pairs, pair_names, function(pr, nm) {
+    d <- df_site_nutrient %>%
+      filter(group %in% pr) %>%
+      select(location_id, group, value) %>%
+      pivot_wider(names_from = group, values_from = value)
+
+    x <- d[[pr[1]]]; y <- d[[pr[2]]]
+    keep <- !is.na(x) & !is.na(y)
+    x <- x[keep]; y <- y[keep]
+    n_pairs <- length(x)
+
+    if (n_pairs < 2) {
+      return(tibble(comparison = nm, n_pairs = n_pairs, p_value = NA_real_))
+    }
+
+    wt <- wilcox.test(x, y, paired = TRUE, exact = FALSE)
+
+    tibble(comparison = nm, n_pairs = n_pairs, p_value = wt$p.value)
+  })
+}
+
+# per-site + all-sites
+wilcox_results <- bind_rows(
+  lime_wilcox %>%
+    group_by(site, nutrient) %>%
+    group_modify(~ run_wilcox_pairs(.x)) %>%
+    ungroup() %>%
+    mutate(site = as.character(site)),
+  lime_wilcox %>%
+    group_by(nutrient) %>%
+    group_modify(~ run_wilcox_pairs(.x)) %>%
+    ungroup() %>%
+    mutate(site = "All sites")
+) %>%
+  mutate(
+    stars = p_stars(p_value),
+    p_fmt = if_else(is.na(p_value), "NA", formatC(p_value, format = "g", digits = 3)),
+    cell = paste0(p_fmt, stars, " (n=", n_pairs, ")")
+  )
+
+# ---- split into separate nutrient tables ----
+wilcox_tables_by_nutrient <- wilcox_results %>%
+  select(nutrient, site, comparison, cell) %>%
+  pivot_wider(names_from = comparison, values_from = cell) %>%
+  arrange(site) %>%
+  group_split(nutrient) %>%
+  set_names(map_chr(group_split(wilcox_results, nutrient), ~ unique(.x$nutrient)))
+
+# ---- print each table in HTML with a caption ----
+
+walk(wilcox_tables_by_nutrient, ~{
+  print(
+    knitr::kable(.x %>% select(-nutrient),
+                 caption = paste0("Wilcoxon paired tests — ", unique(.x$nutrient))) %>%
+      kable_styling(
+        bootstrap_options = c("striped"),
+        full_width = FALSE,
+        position = "center"
+      )
+  )
+})
+
+```
+
+### Pull in Cropland Perry Data for Comparison
+
+```{r}
+#pull in perry data:
+perry_surf <- read_csv("../data_do_not_push/perry_soil_points_surface.csv") %>%
+  clean_names()
+
+perry_fp <- read_csv("../data_do_not_push/Perry Full-Profile SampleData 1_15_2026_corrected.csv")  %>%
+  clean_names() %>%
+  #rename sample_point_id to Point_ID:
+  rename(Point_ID = sample_id_lab)
+perry_Ap_hz_results <- read_csv("../data_do_not_push/Ap_results_1_26_26.csv")  %>%
+  clean_names()
+perry_fp_locs <- read_csv("../data_do_not_push/Perry_full_profile_points.csv")  %>%
+  clean_names()
+#str(perry_fp_locs)
+#add depths to dataset:
+
+# str(depths)
+# str(perry_fp)
+# str(perry_Ap_hz_results)
+
+# Parse Ap chemistry keys from "230045 - P1 - Ap"
+perry_Ap_parsed <- perry_Ap_hz_results %>%
+  mutate(sample = str_squish(sample)) %>%
+  separate(sample, into = c("Point_ID", "point", "horizon_lab"),
+           sep = "\\s*-\\s*", remove = FALSE, fill = "right", extra = "merge") %>%
+  mutate(
+    Point_ID = as.character(Point_ID) %>% str_trim(),
+    point    = str_trim(point),
+    horizon_lab = str_trim(horizon_lab)
+  )
+
+# Standardize perry_fp + parse depth range
+perry_fp2 <- perry_fp %>%
+  mutate(
+    Point_ID = as.character(Point_ID) %>% str_trim(),
+    point    = str_trim(point),
+    horizon  = str_trim(horizon),
+    to_depth_cm = str_squish(to_depth_cm)
+  ) %>%
+  separate(to_depth_cm, into = c("top_cm","bottom_cm"),
+           sep = "\\s*-\\s*", remove = FALSE, fill = "right") %>%
+  mutate(
+    top_cm = parse_number(top_cm),
+    bottom_cm = parse_number(bottom_cm)
+  )
+
+# Join chemistry (by sample ID lab)
+perry_fp_with_chem <- perry_fp2 %>%
+  left_join(
+    perry_Ap_parsed %>%
+      select(Point_ID, lab, lbc_1, lb_ceq, p_h_2, ca, k, mg, mn, p, zn),
+    by = "Point_ID"
+  )
+
+# ---- Keep Ap / Ap1 / Ap2 / ^Ap ----
+# This includes Ap2 now.
+soil_vars <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+perry_fp_Ap_family <- perry_fp_with_chem %>%
+  # keep all Ap variants, including Ap2 and ^Ap
+  filter(str_detect(horizon, "^(\\^)?Ap\\d*$")) %>%
+  select(point, Point_ID, horizon,
+         observational_method, potential_series_in_progress,
+         to_depth_cm, top_cm, bottom_cm, h_depth_cm,
+         all_of(soil_vars), lab)
+
+# check what horizons you kept
+perry_fp_Ap_family %>% count(horizon) %>% arrange(horizon)
+
+```
+```{r}
+# Compare all sites (including perry surface samples)
+# ---------------------------------------
+
+```
+
+```{r}
+#remove points P1-P4, and 1,23,24,34,35,36,46,60,73)
+perry_fp_Ap_family_clean <- perry_fp_Ap_family %>%
+  filter(!point %in% c("P1","P2","P3","P4","1","23","24","34","35","36","46","60","73"))
+
+
+#compare to surface data:
+
+# ---------------------------------------
+# 1) FP: keep only Ap horizons that represent 0–20 cm
+#    - must start at 0
+#    - must end <= 20
+# ---------------------------------------
+perry_fp_Ap_0_20 <- perry_fp_Ap_family_clean %>%
+  filter(!is.na(top_cm), !is.na(bottom_cm)) %>%
+  filter(top_cm == 0, bottom_cm <= 20) %>%
+  mutate(dataset = "FP Ap (0–20 cm)") %>%
+  # keep point as the "label" to match surface "PointLabel"
+  transmute(
+    dataset,
+    PointLabel = point,
+    horizon,
+    top_cm, bottom_cm,
+    across(all_of(soil_vars), as.numeric)
+  )
+
+# sanity check
+perry_fp_Ap_0_20 %>% count(horizon) %>% arrange(horizon)
+
+# ---------------------------------------
+# 2) Surface: keep SPID + CID, remove excluded points
+# ---------------------------------------
+exclude_pts <- c("P1","P2","P3","P4","1","23","24","34","35","36","46","60","73")
+
+perry_surf_clean <- perry_surf %>%
+  mutate(
+    PointLabel = as.character(point_label),
+    type = as.character(type)
+  ) %>%
+  filter(type %in% c("SPID","CID")) %>%
+  filter(!PointLabel %in% exclude_pts) %>%
+  mutate(dataset = paste0("Surface ", type)) %>%
+  transmute(
+    dataset,
+    PointLabel,
+    type,
+    across(all_of(soil_vars), as.numeric)
+  )
+
+# ---------------------------------------
+# 3) Combine to long format for plotting/testing
+# ---------------------------------------
+plot_df <- bind_rows(
+  perry_surf_clean %>% select(dataset, PointLabel, all_of(soil_vars)),
+  perry_fp_Ap_0_20 %>% select(dataset, PointLabel, all_of(soil_vars))
+) %>%
+  pivot_longer(all_of(soil_vars), names_to = "nutrient", values_to = "value") %>%
+  filter(!is.na(value)) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = soil_vars),
+    dataset  = factor(dataset, levels = c("Surface SPID", "Surface CID", "FP Ap (0–20 cm)")),
+    value_plot = case_when(
+      nutrient == "p_h_2" ~ value,
+      value > 0 ~ log10(value),
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  filter(!is.na(value_plot))
+
+# ---------------------------------------
+# 4) Plot: 3 boxplots per nutrient (SPID vs CID vs FP)
+# ---------------------------------------
+ggplot(plot_df, aes(x = dataset, y = value_plot, fill = dataset)) +
+  geom_boxplot(width = 0.75, outlier.alpha = 0.25) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  labs(
+    x = NULL, y = NULL,
+    title = "Surface (SPID, CID) vs Full-Profile Ap horizons constrained to 0–20 cm (log10 except pH)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 25, hjust = 1)
+  )
+
+wilcox_tbl_perry <- plot_df %>%
+  filter(dataset %in% c("Surface SPID","Surface CID","FP Ap (0–20 cm)")) %>%
+  group_by(nutrient) %>%
+  summarise(
+    p_spid = wilcox.test(
+      value_plot[dataset=="FP Ap (0–20 cm)"],
+      value_plot[dataset=="Surface SPID"],
+      exact = FALSE
+    )$p.value,
+
+    p_cid = wilcox.test(
+      value_plot[dataset=="FP Ap (0–20 cm)"],
+      value_plot[dataset=="Surface CID"],
+      exact = FALSE
+    )$p.value,
+
+    p_spid_cid = wilcox.test(
+      value_plot[dataset=="Surface SPID"],
+      value_plot[dataset=="Surface CID"],
+      exact = FALSE
+    )$p.value,
+
+    .groups = "drop"
+  )
+wilcox_tbl_stars <- wilcox_tbl_perry %>%
+  mutate(
+    sig_fp_spid = case_when(
+      p_spid < 0.001 ~ "***",
+      p_spid < 0.01  ~ "**",
+      p_spid < 0.05  ~ "*",
+      TRUE           ~ "ns"
+    ),
+    sig_fp_cid = case_when(
+      p_cid < 0.001 ~ "***",
+      p_cid < 0.01  ~ "**",
+      p_cid < 0.05  ~ "*",
+      TRUE          ~ "ns"
+    ),
+    sig_spid_cid = case_when(
+      p_spid_cid < 0.001 ~ "***",
+      p_spid_cid < 0.01  ~ "**",
+      p_spid_cid < 0.05  ~ "*",
+      TRUE               ~ "ns"
+    )
+  )
+
+wilcox_tbl_stars
+```
+
+#local correlation:
+```{r}
+
+#----------------------------
+# 0) Build clean coordinate keys (NO many-to-many)
+#----------------------------
+
+# Surface coords keyed by PointLabel + type (SPID/CID)
+surf_xy_key <- perry_surf %>%
+  transmute(
+    PointLabel = as.character(point_label),
+    type = as.character(type),
+    x = as.numeric(x),
+    y = as.numeric(y)
+  ) %>%
+  distinct(PointLabel, type, .keep_all = TRUE)
+
+# FP coords keyed by PointLabel (P1, P2, ...)
+fp_xy_key <- perry_fp_locs %>%
+  transmute(
+    PointLabel = as.character(point_id_2),
+    x = as.numeric(point_x),
+    y = as.numeric(point_y)
+  ) %>%
+  distinct(PointLabel, .keep_all = TRUE)
+
+#----------------------------
+# 1) Surface sf (SPID + CID)  -> dataset = SPID/CID
+#----------------------------
+surf_sf <- perry_surf_clean %>%
+  mutate(
+    PointLabel = as.character(PointLabel),
+    type = as.character(type)
+  ) %>%
+  left_join(surf_xy_key, by = c("PointLabel","type")) %>%
+  filter(!is.na(x), !is.na(y)) %>%
+  st_as_sf(coords = c("x","y"), crs = 4326, remove = FALSE) %>%
+  st_transform(26917) %>%
+  mutate(dataset = type)   # <- IMPORTANT: dataset becomes SPID or CID
+
+#----------------------------
+# 2) FP sf (0–20cm Ap family) -> dataset = FP
+#----------------------------
+fp_sf <- perry_fp_Ap_0_20 %>%
+  mutate(PointLabel = as.character(PointLabel)) %>%
+  left_join(fp_xy_key, by = "PointLabel") %>%
+  filter(!is.na(x), !is.na(y)) %>%
+  st_as_sf(coords = c("x","y"), crs = 3857, remove = FALSE) %>%  # FP coords are Web Mercator meters
+  st_transform(26917) %>%
+  mutate(dataset = "FP")
+
+#----------------------------
+# 3) Combine + sanity check
+#----------------------------
+all_sf <- bind_rows(surf_sf, fp_sf) %>%
+  mutate(dataset = factor(dataset, levels = c("SPID","CID","FP")))
+
+cat("Counts by dataset:\n")
+print(all_sf %>% st_drop_geometry() %>% count(dataset))
+
+#----------------------------
+# 4) Distance-decay helper (pairs among NON-NA values)
+#----------------------------
+distance_decay <- function(sfobj, var){
+  v <- sfobj[[var]]
+  idx <- which(!is.na(v))
+
+  if (length(idx) < 2) {
+    return(tibble(i = integer(), j = integer(), dist = numeric(), diff = numeric()))
+  }
+
+  # compute distances only for idx points (smaller + avoids irrelevant NA rows)
+  dmat <- st_distance(sfobj[idx,], sfobj[idx,])
+  dmat <- units::drop_units(dmat)
+
+  pairs <- combn(seq_along(idx), 2)  # indices inside idx vector
+
+  tibble(
+    i = idx[pairs[1, ]],
+    j = idx[pairs[2, ]],
+    dist = dmat[cbind(pairs[1, ], pairs[2, ])],
+    diff = abs(v[idx[pairs[1, ]]] - v[idx[pairs[2, ]]])
+  )
+}
+
+#----------------------------
+# 5) Build long decay data for all nutrients
+#----------------------------
+decay_long <- map_dfr(soil_vars, \(nm){
+  df <- distance_decay(all_sf, nm)
+  df$nutrient <- nm
+  df
+})
+
+cat("Rows in decay_long:", nrow(decay_long), "\n")
+
+#----------------------------
+# 6) Binned pooled plot (ALL points)
+#----------------------------
+decay_binned <- decay_long %>%
+  filter(is.finite(dist), is.finite(diff)) %>%
+  group_by(nutrient) %>%
+  mutate(
+    dist_bin = cut(dist,
+                   breaks = seq(0, max(dist, na.rm = TRUE), by = 50),
+                   include.lowest = TRUE)
+  ) %>%
+  ungroup() %>%
+  group_by(nutrient, dist_bin) %>%
+  summarise(
+    mean_dist = mean(dist, na.rm = TRUE),
+    mean_diff = mean(diff, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+p_pooled <- ggplot(decay_binned, aes(x = mean_dist, y = mean_diff)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "loess", span = 0.6, se = FALSE) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = "Distance between points (m)",
+    y = "Mean absolute difference",
+    title = "Distance–similarity decay of Ap Horizon Samples (0-20 cm) with Single Point and Composite Samples (0-15 cm)"
+  )
+print(p_pooled)
+
+#----------------------------
+# 7) Pair-type labeling (SPID–SPID, CID–CID, FP–FP, SPID–CID, etc.)
+#----------------------------
+ds_vec <- as.character(all_sf$dataset)
+
+decay_long2 <- decay_long %>%
+  mutate(
+    ds_i = ds_vec[i],
+    ds_j = ds_vec[j],
+    pair_type = if_else(ds_i == ds_j,
+                        paste0(ds_i, "–", ds_j),
+                        paste0(pmin(ds_i, ds_j), "–", pmax(ds_i, ds_j)))
+  )
+
+cat("Pair type counts:\n")
+print(decay_long2 %>% count(pair_type))
+
+#----------------------------
+# 8) SPID-only + CID-only plot sets (raw scatter + loess)
+#----------------------------
+# spid_df <- decay_long2 %>% filter(pair_type == "SPID–SPID")
+# cid_df  <- decay_long2 %>% filter(pair_type == "CID–CID")
+# 
+# if (nrow(spid_df) > 0) {
+#   p_spid <- ggplot(spid_df, aes(x = dist, y = diff)) +
+#     geom_point(alpha = 0.2, size = 0.8) +
+#     geom_smooth(se = FALSE, method = "loess", span = 0.6) +
+#     facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+#     labs(x = "Distance (m)", y = "Absolute difference |Δ|",
+#          title = "Distance–dissimilarity decay (SPID only)") +
+#     theme_minimal(base_size = 12)
+#   print(p_spid)
+# } else {
+#   message("No SPID–SPID pairs found. Check dataset labels and that SPID values exist for these nutrients.")
+# }
+# 
+# if (nrow(cid_df) > 0) {
+#   p_cid <- ggplot(cid_df, aes(x = dist, y = diff)) +
+#     geom_point(alpha = 0.2, size = 0.8) +
+#     geom_smooth(se = FALSE, method = "loess", span = 0.6) +
+#     facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+#     labs(x = "Distance (m)", y = "Absolute difference |Δ|",
+#          title = "Distance–dissimilarity decay (CID only)") +
+#     theme_minimal(base_size = 12)
+#   print(p_cid)
+# } else {
+#   message("No CID–CID pairs found. Check dataset labels and that CID values exist for these nutrients.")
+# }
+
+# ----------------------------
+# Binned decay helper (same style as pooled)
+# ----------------------------
+bin_decay <- function(df, bin_width = 50){
+  df %>%
+    filter(is.finite(dist), is.finite(diff)) %>%
+    group_by(nutrient) %>%
+    mutate(
+      dist_bin = cut(
+        dist,
+        breaks = seq(0, max(dist, na.rm = TRUE), by = bin_width),
+        include.lowest = TRUE
+      )
+    ) %>%
+    ungroup() %>%
+    group_by(nutrient, dist_bin) %>%
+    summarise(
+      mean_dist = mean(dist, na.rm = TRUE),
+      mean_diff = mean(diff, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+bin_width <- 50  # same as pooled
+
+# ----------------------------
+# SPID-only binned plot (same style as pooled)
+# ----------------------------
+spid_binned <- decay_long2 %>%
+  filter(pair_type == "SPID–SPID") %>%
+  bin_decay(bin_width = bin_width)
+
+ggplot(spid_binned, aes(x = mean_dist, y = mean_diff)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "loess", span = 0.6, se = FALSE) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = "Distance between points (m)",
+    y = "Mean absolute difference",
+    title = "Distance–similarity decay of Single Point Samples (0-15 cm)"
+  )
+
+# ----------------------------
+# CID-only binned plot (same style as pooled)
+# ----------------------------
+cid_binned <- decay_long2 %>%
+  filter(pair_type == "CID–CID") %>%
+  bin_decay(bin_width = bin_width)
+
+ggplot(cid_binned, aes(x = mean_dist, y = mean_diff)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "loess", span = 0.6, se = FALSE) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = "Distance between points (m)",
+    y = "Mean absolute difference",
+    title = "Distance–similarity decay of Composite Samples (0-15 cm)"
+  )
+```
+
+
+### Variogram stuff (no correlation big picture:)
+
+```{r}
+
+soil_vars <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+#--- 0) Ensure key columns exist (quick sanity)
+names(perry_fp_locs)
+
+# perry_fp_locs has point_id_2 (P1, P2, ...) and point_x/point_y in EPSG:3857
+fp_locs_key <- perry_fp_locs %>%
+  transmute(
+    point = str_trim(point_id_2),  # "P1", "P2", ...
+    point_x = as.numeric(point_x),
+    point_y = as.numeric(point_y),
+    point_id = point_id,           # keep if you want
+    notes = notes
+  ) %>%
+  distinct(point, .keep_all = TRUE)
+
+#--- 1) Parse Ap chemistry keys from "230045 - P1 - Ap"
+perry_Ap_parsed <- perry_Ap_hz_results %>%
+  mutate(sample = str_squish(sample)) %>%
+  separate(
+    sample,
+    into = c("Point_ID", "point", "horizon_lab"),
+    sep = "\\s*-\\s*",
+    remove = FALSE,
+    fill = "right",
+    extra = "merge"
+  ) %>%
+  mutate(
+    Point_ID = as.character(Point_ID) %>% str_trim(),
+    point = str_trim(point),
+    horizon_lab = str_trim(horizon_lab)
+  )
+
+#--- 2) Standardize perry_fp and parse depth range
+perry_fp2 <- perry_fp %>%
+  mutate(
+    Point_ID = as.character(Point_ID) %>% str_trim(),
+    point    = str_trim(point),
+    horizon  = str_trim(horizon),
+    to_depth_cm = str_squish(to_depth_cm)
+  ) %>%
+  separate(
+    to_depth_cm,
+    into = c("top_cm","bottom_cm"),
+    sep = "\\s*-\\s*",
+    remove = FALSE,
+    fill = "right"
+  ) %>%
+  mutate(
+    top_cm = parse_number(top_cm),
+    bottom_cm = parse_number(bottom_cm)
+  )
+
+#--- 3) Join Ap chemistry onto profile rows (by sample id lab = Point_ID)
+perry_fp_with_chem <- perry_fp2 %>%
+  left_join(
+    perry_Ap_parsed %>%
+      select(Point_ID, lab, all_of(soil_vars)),
+    by = "Point_ID"
+  )
+
+#--- 4) Join coords onto *every* profile row using point label (P1, P2, ...)
+perry_fp_merged <- perry_fp_with_chem %>%
+  left_join(fp_locs_key, by = "point") %>%
+  relocate(point, Point_ID, horizon, to_depth_cm, top_cm, bottom_cm, point_x, point_y, .after = 1)
+
+#--- 5) Sanity checks (these should NOT be 0)
+cat("Profile rows:", nrow(perry_fp_with_chem), "\n")
+cat("Merged rows :", nrow(perry_fp_merged), "\n")
+cat("Rows with coords:", sum(!is.na(perry_fp_merged$point_x) & !is.na(perry_fp_merged$point_y)), "\n")
+
+# -----------------------------
+# 1) FP: keep Ap-family only, restrict to 0–20, then ONE row per profile (point)
+#    - must start at 0
+#    - bottom <= 20
+#    - if multiple (Ap, Ap1, Ap2, ^Ap), keep deepest bottom_cm within 0–20
+# -----------------------------
+fp_0_20_one <- perry_fp_merged %>%
+  filter(!is.na(point_x), !is.na(point_y)) %>%
+  mutate(horizon = str_trim(horizon)) %>%
+  filter(str_detect(horizon, "^(\\^)?Ap\\d*$")) %>%                 # Ap family
+  filter(!is.na(top_cm), !is.na(bottom_cm)) %>%
+  filter(top_cm == 0, bottom_cm <= 20) %>%                         # 0–20 only
+  group_by(point) %>%
+  arrange(desc(bottom_cm), horizon) %>%                            # prefer deepest within 0–20
+  slice(1) %>%                                                     # ONE per point/profile
+  ungroup() %>%
+  mutate(dataset = "FP") %>%
+  select(dataset, point, point_x, point_y, all_of(soil_vars))
+
+# -----------------------------
+# 2) Make SF objects in common CRS (UTM 17N meters)
+#    - Surface x/y are lon/lat -> EPSG:4326
+#    - FP point_x/point_y are Web Mercator meters -> EPSG:3857
+# -----------------------------
+surf_sf <- st_as_sf(perry_surf, coords = c("x","y"), crs = 4326, remove = FALSE) %>%
+  st_transform(26917) %>%                # UTM 17N meters
+  mutate(dataset = type) %>%             # SPID / CID
+  select(dataset, all_of(soil_vars), geometry)
+
+fp_sf <- st_as_sf(fp_0_20_one, coords = c("point_x","point_y"), crs = 3857, remove = FALSE) %>%
+  st_transform(st_crs(surf_sf)) %>%      # match UTM 17N
+  select(dataset, all_of(soil_vars), geometry)
+
+all_sf <- bind_rows(surf_sf, fp_sf) %>%
+  mutate(dataset = factor(dataset, levels = c("SPID","CID","FP")))
+
+# -----------------------------
+# 3) Helper: build variogram DF for one nutrient:
+#    - pooled (ALL)
+#    - SPID-only
+#    - CID-only
+#    - FP-only
+# -----------------------------
+make_variogram_df <- function(sf_all, var, width = 25, cutoff = NULL, min_n = 15) {
+  dat_all <- sf_all %>% select(dataset, !!sym(var)) %>% filter(!is.na(.data[[var]]))
+
+  if (nrow(dat_all) < min_n) return(NULL)
+
+  # default cutoff: half the diagonal of bounding box
+  if (is.null(cutoff)) {
+    bb <- st_bbox(dat_all)
+    maxd <- sqrt((bb$xmax - bb$xmin)^2 + (bb$ymax - bb$ymin)^2)
+    cutoff <- as.numeric(maxd) / 2
+  }
+
+  # pooled
+  vg_all <- gstat::variogram(as.formula(paste0(var, " ~ 1")),
+                             data = dat_all, cutoff = cutoff, width = width) %>%
+    mutate(group = "ALL (pooled)", nutrient = var)
+
+  # by dataset
+  vg_by <- levels(sf_all$dataset) %>%
+    map_dfr(function(ds) {
+      dat <- sf_all %>% filter(dataset == ds) %>% select(dataset, !!sym(var)) %>% filter(!is.na(.data[[var]]))
+      if (nrow(dat) < min_n) return(NULL)
+      gstat::variogram(as.formula(paste0(var, " ~ 1")),
+                       data = dat, cutoff = cutoff, width = width) %>%
+        mutate(group = paste0(ds, " only"), nutrient = var)
+    })
+
+  bind_rows(vg_all, vg_by)
+}
+
+# -----------------------------
+# 4) Compute variograms for all nutrients + plot
+# -----------------------------
+width_m <- 25    # lag bin width (m). Try 25, 50, 75
+cutoff_m <- NULL # set a number if you want fixed cutoff, else auto
+min_n <- 15
+
+vg_long <- map_dfr(soil_vars, ~ make_variogram_df(all_sf, .x, width = width_m, cutoff = cutoff_m, min_n = min_n))
+
+# Print a quick summary of sample sizes per nutrient/type (helps debug)
+sizes_tbl <- map_dfr(soil_vars, function(v) {
+  all_sf %>%
+    st_drop_geometry() %>%
+    mutate(v = .data[[v]]) %>%
+    group_by(dataset) %>%
+    summarise(n = sum(!is.na(v)), .groups = "drop") %>%
+    mutate(nutrient = v) %>%
+    relocate(nutrient)
+})
+print(sizes_tbl)
+
+# Variogram plot grid
+p_vg <- ggplot(vg_long, aes(x = dist, y = gamma, color = group)) +
+  geom_point(alpha = 0.85) +
+  geom_line(alpha = 0.75) +
+  facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+  theme_minimal(base_size = 12) +
+  labs(
+    x = "Lag distance (m)",
+    y = "Semivariance",
+    title = "Semivariograms by nutrient: pooled vs within sampling type (SPID, CID, FP 0–20 one-per-profile)"
+  )
+print(p_vg)
+
+
+```
+```{r}
+vg_fits <- vg_long %>%
+  group_by(nutrient, group) %>%
+  group_modify(~{
+    emp <- .x
+
+    # If too few points → return empty tibble
+    if (nrow(emp) < 5) {
+      return(tibble(
+        model = character(),
+        nugget = numeric(),
+        sill = numeric(),
+        range_m = numeric(),
+        sse = numeric(),
+        fit_obj = list()
+      ))
+    }
+
+    sill0  <- max(emp$gamma, na.rm = TRUE)
+    range0 <- max(emp$dist, na.rm = TRUE) / 3
+
+    models <- c("Sph","Exp","Gau")
+
+    fits <- map_dfr(models, function(m){
+      v0 <- vgm(psill = sill0, model = m, range = range0)
+      fit <- tryCatch(fit.variogram(emp, v0), error = function(e) NULL)
+
+      if (is.null(fit)) return(NULL)
+
+      tibble(
+        model = m,
+        nugget = ifelse(any(fit$model=="Nug"),
+                        fit$psill[fit$model=="Nug"], 0),
+        sill   = sum(fit$psill[fit$model!="Nug"]),
+        range_m = fit$range[fit$model!="Nug"][1],
+        sse = attr(fit,"SSErr"),
+        fit_obj = list(fit)
+      )
+    })
+
+    # If no model fit → return empty tibble
+    if (nrow(fits) == 0) {
+      return(tibble(
+        model = character(),
+        nugget = numeric(),
+        sill = numeric(),
+        range_m = numeric(),
+        sse = numeric(),
+        fit_obj = list()
+      ))
+    }
+
+    fits[which.min(fits$sse), ]
+  }) %>%
+  ungroup()
+vg_fits
+```
+```{r}
+# FP-only SF object from previous step
+fp_only <- all_sf %>% 
+  filter(dataset == "FP")
+
+fit_variogram_fp <- function(var, width = 25) {
+
+  dat <- fp_only %>%
+    select(!!sym(var)) %>%
+    filter(!is.na(.data[[var]]))
+
+  if (nrow(dat) < 15) return(NULL)
+
+  # empirical variogram
+  v_emp <- variogram(as.formula(paste0(var, " ~ 1")), dat, width = width)
+
+  # initial guesses
+  vgm0 <- vgm(psill = var(dat[[var]], na.rm = TRUE),
+              model = "Exp",
+              range = max(v_emp$dist)/3,
+              nugget = 0)
+
+  # try several models
+  fits <- list(
+    Exp = fit.variogram(v_emp, vgm("Exp")),
+    Sph = fit.variogram(v_emp, vgm("Sph")),
+    Gau = fit.variogram(v_emp, vgm("Gau"))
+  )
+
+  # compute SSE
+  sse <- map_dbl(fits, ~ attr(.x, "SSErr"))
+  best <- names(which.min(sse))
+  best_fit <- fits[[best]]
+
+  list(
+    nutrient = var,
+    emp = v_emp,
+    fit = best_fit,
+    model = best,
+    nugget = best_fit$psill[1],
+    sill = sum(best_fit$psill),
+    range = best_fit$range[2],
+    sse = min(sse)
+  )
+}
+
+# Fit all nutrients
+fp_fits <- map(soil_vars, fit_variogram_fp)
+
+# Summary table
+fp_summary <- map_dfr(fp_fits, ~{
+  if (is.null(.x)) return(NULL)
+  tibble(
+    nutrient = .x$nutrient,
+    model = .x$model,
+    nugget = round(.x$nugget, 3),
+    sill = round(.x$sill, 3),
+    nugget_ratio = round(.x$nugget / .x$sill, 3),
+    range_m = round(.x$range, 1),
+    sse = round(.x$sse, 2)
+  )
+})
+
+fp_summary
+vg_plots_fp <- map(fp_fits, function(res) {
+  if (is.null(res)) return(NULL)
+
+  ggplot(res$emp, aes(dist, gamma)) +
+    geom_point() +
+    geom_line(data = variogramLine(res$fit, maxdist = max(res$emp$dist)),
+              aes(dist, gamma), color = "red", linewidth = 1) +
+    theme_minimal() +
+    labs(
+      title = paste(res$nutrient, "| FP-only |", res$model),
+      subtitle = paste("range =", round(res$range,1), "m | nugget ratio =", round(res$nugget/res$sill,2)),
+      x = "Distance (m)",
+      y = "Semivariance"
+    )
+})
+
+# show them
+wrap_plots(vg_plots_fp)
+
+```
+
+
+
+
+
+
