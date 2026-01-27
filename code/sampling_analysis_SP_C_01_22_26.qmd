@@ -110,7 +110,7 @@ nutrient_names <- c(
   "lb_ceq" = "Lime Buffer Capacity Equivalent (LBCeq)"
 )
 
-lime_plot <- lime %>%
+lime_plot <- lime_clean %>%
   # log1p everything except pH (this is the key change)
   mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
   pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
@@ -162,7 +162,7 @@ ggsave("../output_do_not_push/nutrient_density_plots_by_sampling_type.png",
 nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
 nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
 
-lime_norm <- lime %>%
+lime_norm <- lime_clean %>%
   mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
   pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
   mutate(
@@ -385,11 +385,332 @@ perry_fp_Ap_family <- perry_fp_with_chem %>%
 perry_fp_Ap_family %>% count(horizon) %>% arrange(horizon)
 
 ```
+
+### Cropland v. Forage Comparison
+
 ```{r}
-# Compare all sites (including perry surface samples)
-# ---------------------------------------
+
+### Surface-only comparison: Forage sites + Perry (SP vs COMP), with easy toggles
+# Assumes you already have these objects from your earlier chunks:
+#   - lime_clean   (forage dataset, cleaned with sampling_class, comp_depth, sp_rep, location_id, site, etc.)
+#   - perry_surf   (Perry surface points with columns: type (SPID/CID), point_label, and nutrients)
+# Also assumes:
+#   nutrients_all / nutrients and p_stars() exist; if not, keep the definitions below.
+
+# -----------------------------
+# 0) Setup
+# -----------------------------
+nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
+
+p_stars <- function(p) {
+  dplyr::case_when(
+    is.na(p)  ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    p < 0.1   ~ ".",
+    TRUE      ~ "ns"
+  )
+}
+
+# ---------------------------------------------------------
+# 1) FORAGE surface: build one SP + one COMP per location_id
+#    with toggles for choosing SP rep or COMP depth
+# ---------------------------------------------------------
+
+# ---- FORAGE SP toggle ----
+# Default: average SP A and SP B per location_id
+forage_sp <- lime_clean %>%
+  filter(sampling_class == "SP", type %in% c("A","B")) %>%
+  group_by(site, sample_site, lat, long, location_id) %>%
+  summarise(across(all_of(nutrients_all), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  mutate(sampling_type = "SP")
+
+# OPTION: use only SP A (uncomment)
+forage_sp <- lime_clean %>%
+  filter(type == "A") %>%
+  transmute(site, sample_site, lat, long, location_id,
+            across(all_of(nutrients_all), as.numeric),
+            sampling_type = "SP")
+
+# OPTION: use only SP B (uncomment)
+# forage_sp <- lime_clean %>%
+#   filter(type == "B") %>%
+#   transmute(site, sample_site, lat, long, location_id,
+#             across(all_of(nutrients_all), as.numeric),
+#             sampling_type = "SP")
+
+# ---- FORAGE COMP toggle ----
+# Default: average 0–4 and 4–8 per location_id
+forage_comp <- lime_clean %>%
+  filter(sampling_class == "C", type %in% c("0-4","4-8")) %>%
+  group_by(site, sample_site, lat, long, location_id) %>%
+  summarise(across(all_of(nutrients_all), ~ mean(.x, na.rm = TRUE)), .groups = "drop") %>%
+  mutate(sampling_type = "COMP")
+
+# OPTION: use only 0–4 (uncomment)
+forage_comp <- lime_clean %>%
+  filter(type == "0-4") %>%
+  transmute(site, sample_site, lat, long, location_id,
+            across(all_of(nutrients_all), as.numeric),
+            sampling_type = "COMP")
+
+# OPTION: use only 4–8 (uncomment)
+# forage_comp <- lime_clean %>%
+#   filter(type == "4-8") %>%
+#   transmute(site, sample_site, lat, long, location_id,
+#             across(all_of(nutrients_all), as.numeric),
+#             sampling_type = "COMP")
+
+forage_surface_wide <- bind_rows(forage_sp, forage_comp) %>%
+  mutate(context = "Forage")
+
+# ---------------------------------------------------------
+# 2) PERRY surface: SPID vs CID as SP vs COMP (already surface)
+# ---------------------------------------------------------
+exclude_pts <- c("P1","P2","P3","P4","1","23","24","34","35","36","46","60","73")
+
+perry_surface_wide <- perry_surf %>%
+  clean_names() %>%
+  mutate(
+    PointLabel = as.character(point_label),
+    type = as.character(type),
+    sampling_type = case_when(
+      type == "SPID" ~ "SP",
+      type == "CID"  ~ "COMP",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(sampling_type)) %>%
+  filter(!PointLabel %in% exclude_pts) %>%
+  transmute(
+    site = "Perry",
+    context = "Perry",
+    location_id = PointLabel,
+    sampling_type,
+    across(all_of(nutrients_all), as.numeric)
+  )
+
+# ---------------------------------------------------------
+# 3) Combine Forage + Perry, long format w/ log1p transform
+# ---------------------------------------------------------
+# --- FIX: force location_id to character in BOTH datasets before bind_rows() ---
+forage_surface_wide2 <- forage_surface_wide %>%
+  mutate(
+    site = as.character(site),
+    context = as.character(context),
+    sampling_type = as.character(sampling_type),
+    location_id = as.character(location_id)
+  ) %>%
+  transmute(site, context, location_id, sampling_type, across(all_of(nutrients_all), as.numeric))
+
+perry_surface_wide2 <- perry_surface_wide %>%
+  mutate(
+    site = as.character(site),
+    context = as.character(context),
+    sampling_type = as.character(sampling_type),
+    location_id = as.character(location_id)
+  ) %>%
+  transmute(site, context, location_id, sampling_type, across(all_of(nutrients_all), as.numeric))
+
+# --- Now this will work ---
+surf_all_wide <- bind_rows(forage_surface_wide2, perry_surface_wide2)
+
+
+surf_long <- surf_all_wide %>%
+  pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value_raw") %>%
+  mutate(
+    value = if_else(nutrient == "p_h_2", value_raw, log1p(value_raw)),
+    nutrient = factor(nutrient, levels = nutrients_all),
+    sampling_type = factor(sampling_type, levels = c("SP","COMP")),
+    context = factor(context, levels = c("Forage","Perry"))
+  ) %>%
+  filter(!is.na(value))
+
+
+
+# ---------------------------------------------------------
+# 5) Wilcoxon tables (unpaired) + stars
+#   - Forage vs Perry within SP and within COMP
+#   - SP vs COMP within Forage and within Perry
+# ---------------------------------------------------------
+
+# helper for unpaired Wilcoxon
+wilcox_unpaired <- function(df, group_var, g1, g2) {
+  x <- df %>% filter(.data[[group_var]] == g1) %>% pull(value)
+  y <- df %>% filter(.data[[group_var]] == g2) %>% pull(value)
+  if (length(x) < 3 || length(y) < 3) return(NA_real_)
+  wilcox.test(x, y, exact = FALSE)$p.value
+}
+
+# (1) Forage vs Perry within sampling_type
+# ---- Perry vs Forage, within each nutrient x sampling_type (SP vs COMP) ----
+# Assumes you have a long df like:
+# surf_long: columns = nutrient, sampling_type (SP/COMP), context (Forage/Perry), value (already transformed if you want)
+
+pvf_tbl <- surf_long %>%
+  filter(context %in% c("Forage", "Perry")) %>%
+  group_by(nutrient, sampling_type) %>%
+  group_modify(~{
+    d <- .x
+
+    x <- d %>% filter(context == "Forage") %>% pull(value)
+    y <- d %>% filter(context == "Perry")  %>% pull(value)
+
+    x <- x[!is.na(x)]
+    y <- y[!is.na(y)]
+
+    n_forage <- length(x)
+    n_perry  <- length(y)
+
+    p_val <- if (n_forage >= 2 && n_perry >= 2) {
+      wilcox.test(x, y, paired = FALSE, exact = FALSE)$p.value
+    } else {
+      NA_real_
+    }
+
+    tibble(
+      n_forage = n_forage,
+      n_perry  = n_perry,
+      p_value  = p_val
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    sig = dplyr::case_when(
+      is.na(p_value) ~ "",
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      p_value < 0.1   ~ ".",
+      TRUE ~ "ns"
+    )
+  )
+
+pvf_tbl
+
+
+pvf_tbl_wide <- pvf_tbl %>%
+  mutate(
+    p_fmt = if_else(is.na(p_value), "NA", formatC(p_value, format="g", digits=3)),
+    cell  = paste0(p_fmt, sig, " (nF=", n_forage, ", nP=", n_perry, ")")
+  ) %>%
+  select(nutrient, sampling_type, cell) %>%
+  pivot_wider(names_from = sampling_type, values_from = cell)
+
+pvf_tbl_wide
+
+
+
+
+
+
+# =========================================================
+# Helper: p-value annotations for "context" comparison
+# within each nutrient x sampling_type (SP/COMP)
+# =========================================================
+
+p_stars2 <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    p < 0.1   ~ ".",
+    TRUE ~ "ns"
+  )
+}
+
+make_context_pvals <- function(df_long, context_levels = c("Forage","Perry")) {
+  df_long %>%
+    filter(context %in% context_levels) %>%
+    group_by(nutrient, sampling_type) %>%
+    summarise(
+      p_value = {
+        d <- cur_data()
+        x <- d %>% filter(context == context_levels[1]) %>% pull(value) %>% na.omit()
+        y <- d %>% filter(context == context_levels[2]) %>% pull(value) %>% na.omit()
+        if (length(x) < 3 || length(y) < 3) NA_real_ else wilcox.test(x, y, exact = FALSE)$p.value
+      },
+      y_max = max(value, na.rm = TRUE),
+      y_min = min(value, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      sig = p_stars2(p_value),
+      p_fmt = if_else(is.na(p_value), "NA", formatC(p_value, format = "g", digits = 3)),
+      label = paste0("p=", p_fmt, sig),
+      # add a little separation so SP + COMP labels don't overlap
+      y = y_max + 0.08 * (y_max - y_min) + if_else(as.character(sampling_type) == "COMP",
+                                                   0.06 * (y_max - y_min), 0),
+      x = 1.5  # midpoint between Forage (x=1) and Perry (x=2)
+    )
+}
+
+plot_context_spcomp <- function(df_long, title_txt) {
+  ann <- make_context_pvals(df_long)
+
+  ggplot(df_long, aes(x = context, y = value, fill = sampling_type)) +
+    geom_boxplot(
+      width = 0.75,
+      outlier.alpha = 0.25,
+      position = position_dodge(width = 0.8)
+    ) +
+    geom_text(
+      data = ann,
+      aes(x = x, y = y, label = label, group = sampling_type),
+      inherit.aes = FALSE,
+      size = 3.2,
+      fontface = "bold"
+    ) +
+    facet_wrap(~ nutrient, scales = "free_y", ncol = 3) +
+    theme_minimal(base_size = 12) +
+    theme(
+      strip.text = element_text(face = "bold"),
+      axis.text.x = element_text(angle = 20, hjust = 1)
+    ) +
+    labs(
+      x = NULL,
+      y = "Value (log1p-transformed except pH)",
+      title = title_txt,
+      fill = "Sampling type"
+    )
+}
+
+# =========================================================
+# Plot 1) All forage vs Perry (your preferred layout + pvals)
+# =========================================================
+p_all <- plot_context_spcomp(
+  surf_long,
+  "Surface samples: cropland (Perry) vs forageland (All forage sites), with SP vs COMP side-by-side\n(p-values compare Forage vs Perry within SP and within COMP for each nutrient)"
+)
+print(p_all)
+
+# =========================================================
+# Plot 2) Coastal Plain subset: Tifton + Midville forage vs Perry
+# (assumes surf_long has a 'site' column; it should, from your wide build)
+# =========================================================
+surf_long_cp <- surf_long %>%
+  mutate(site = as.character(site)) %>%
+  filter(
+    context == "Perry" |
+      (context == "Forage" & site %in% c("Tifton","Midville"))
+  ) %>%
+  mutate(
+    context = factor(context, levels = c("Forage","Perry"))
+  )
+
+p_cp <- plot_context_spcomp(
+  surf_long_cp,
+  "Surface samples (Coastal Plain): cropland (Perry) vs forageland (Tifton + Midville), with SP vs COMP side-by-side\n(p-values compare Forage vs Perry within SP and within COMP for each nutrient)"
+)
+print(p_cp)
 
 ```
+
+
+
 
 ```{r}
 #remove points P1-P4, and 1,23,24,34,35,36,46,60,73)
