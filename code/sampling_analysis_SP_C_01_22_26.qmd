@@ -711,6 +711,7 @@ print(p_cp)
 
 
 
+### Full-profile Ap (0–20 cm) vs Surface Comparison
 
 ```{r}
 #remove points P1-P4, and 1,23,24,34,35,36,46,60,73)
@@ -897,6 +898,12 @@ fp_sf <- perry_fp_Ap_0_20 %>%
   st_as_sf(coords = c("x","y"), crs = 3857, remove = FALSE) %>%  # FP coords are Web Mercator meters
   st_transform(26917) %>%
   mutate(dataset = "FP")
+
+
+#save dataset:
+# write_csv(fp_sf %>%
+#             st_drop_geometry(),
+#           "../data_do_not_push/perry_fp_Ap_0_20_with_coords.csv")
 
 #----------------------------
 # 3) Combine + sanity check
