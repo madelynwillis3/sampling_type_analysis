@@ -1,0 +1,287 @@
+---
+title: "Data_clean_02_2026"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(readr)
+library(readxl)
+library(lubridate)
+```
+
+```{r}
+#CN data
+
+
+
+cn_numeric_cols <- c(
+  "Carbon Average", "Nitrogen Average",
+  "Carbon Std. Dev.", "Nitrogen Std. Dev."
+)
+
+clean_cn_base <- function(df) {
+  df %>%
+    filter(
+      !is.na(`Carbon Average`),
+      `Carbon Average` != "Carbon",
+      `Carbon Average` != "Carbon Average"
+    )
+}
+
+clean_cn_numeric <- function(df) {
+  df %>%
+    mutate(across(
+      any_of(cn_numeric_cols),
+      ~ as.numeric(str_remove(as.character(.x), "%"))
+    ))
+}
+
+# --- safely extract a date string from whatever column exists
+add_analysis_date <- function(df) {
+  date_col <- case_when(
+    "Date" %in% names(df) ~ "Date",
+    "Analysis Date" %in% names(df) ~ "Analysis Date",
+    TRUE ~ NA_character_
+  )
+
+  if (is.na(date_col)) {
+    return(df %>% mutate(analysis_date = as.Date(NA)))
+  }
+
+  df %>%
+    mutate(
+      analysis_date_raw = as.character(.data[[date_col]]),
+      # works for "6/16/2025" AND "1/7/2026 4:03:26 PM"
+      analysis_date = suppressWarnings(mdy(analysis_date_raw)),
+      analysis_date = if_else(
+        is.na(analysis_date),
+        as.Date(suppressWarnings(mdy_hms(analysis_date_raw))),
+        analysis_date
+      )
+    ) %>%
+    select(-analysis_date_raw)
+}
+
+# ---- read
+perry_CN_2025_raw <- read_csv("../data_do_not_push/CN data/11.5.25.csv", show_col_types = FALSE)
+perry_CN_2026_raw <- read_csv("../data_do_not_push/CN data/Madelyn_01_to_02_2026_run.csv", show_col_types = FALSE)
+
+# ---- clean 2025
+perry_CN_2025 <- perry_CN_2025_raw %>%
+  clean_cn_base() %>%
+  clean_cn_numeric() %>%
+  filter(!Type %in% c("Blank", "Standard")) %>%
+  add_analysis_date() %>%
+  transmute(
+    Name, Type, analysis_date,
+    `Carbon Average`, `Nitrogen Average`,
+    `Carbon Std. Dev.`, `Nitrogen Std. Dev.`
+  ) %>%
+  mutate(
+    year = 2025,
+    sample_id = paste0("240", str_pad(as.character(Name), width = 3, pad = "0")),
+    sample_group = "240_surface"
+  )
+
+# ---- clean 2026
+perry_CN_2026 <- perry_CN_2026_raw %>%
+  clean_cn_base() %>%
+  clean_cn_numeric() %>%
+  filter(!Type %in% c("Blank", "Standard")) %>%
+  add_analysis_date() %>%
+  transmute(
+    Name, Type, analysis_date,
+    `Carbon Average`, `Nitrogen Average`,
+    `Carbon Std. Dev.`, `Nitrogen Std. Dev.`
+  ) %>%
+  mutate(
+    year = 2026,
+    sample_id = as.character(Name),
+    sample_group = case_when(
+      str_detect(sample_id, "^240") ~ "240_surface",
+      str_detect(sample_id, "Ap|AP|ap") ~ "Ap_horizon",
+      TRUE ~ "other"
+    )
+  )
+
+# ---- bind + final tidy output
+perry_CN_final <- bind_rows(perry_CN_2025, perry_CN_2026) %>%
+  transmute(
+    sample_id,
+    year,
+    sample_group,
+    C_pct = `Carbon Average`,
+    N_pct = `Nitrogen Average`,
+    C_sd  = `Carbon Std. Dev.`,
+    N_sd  = `Nitrogen Std. Dev.`,
+    C_N_ratio = C_pct / N_pct,
+    analysis_date
+  ) %>%
+  #filter where analysis date is not NA
+  filter(!is.na(analysis_date)) %>%
+  select(sample_id, year, sample_group, C_pct, N_pct,C_N_ratio, analysis_date)
+
+#row 404-414 are surface samples, set aside:
+perry_CN_surface_2026  <- perry_CN_final %>%
+  #filter to rows 404-414
+  slice(404:414)
+
+perry_CN_surface_2025 <- perry_CN_final %>%
+  #filter out rows 404-414
+  slice(1:315)
+
+#combine:
+perry_CN_surface <- bind_rows(perry_CN_surface_2025, perry_CN_surface_2026) %>%
+#remove sample ids: 240leco edta, 240std,and any id longer than 250000.
+  filter(!sample_id %in% c("240leco edta", "240std")) %>%
+  filter(as.numeric(sample_id) < 250000) %>%
+  #set ID as numeric:
+  mutate(sample_id = as.numeric(sample_id)) %>%
+  #set 240658 as C pct 0.52%	N pct 0.03% and 240648 as C pct 0.61%	N pct 0.03%
+  mutate(
+    C_pct = case_when(
+      sample_id == 240658 ~ 0.52,
+      sample_id == 240648 ~ 0.61,
+      TRUE ~ C_pct
+    ),
+    N_pct = case_when(
+      sample_id == 240658 ~ 0.03,
+      sample_id == 240648 ~ 0.03,
+      TRUE ~ N_pct
+    )
+  )
+
+```
+
+```{r}
+#perry_soil_points_surface
+perry_soil_points_surface <- read.csv("../data_do_not_push/perry_soil_points_surface.csv")
+#match ID to perry_CN_surface sample_id:
+
+perry_CN_surface_final <- perry_CN_surface %>%
+  inner_join(perry_soil_points_surface, by = c("sample_id" = "ID")) %>%
+  #filter out column year and sample_group
+  select(-year, -sample_group)
+
+#filter where C is negative:
+perry_CN_surface_fails <- perry_CN_surface_final %>%
+  filter(C_pct <= 0)
+perry_CN_surface_fails
+
+#plot perry_CN_surface_final on map
+library(ggplot2)
+#scale carbon and plot (make scale range from 0 to 5%)
+ggplot(perry_CN_surface_final, aes(x = x, y = y)) +
+  geom_point(aes(color = C_pct), size = 3) +
+  scale_color_viridis_c(option = "plasma", limits = c(0, 2)) +
+  labs(title = "Soil Carbon Percentage at Perry Site Surface Samples",
+       x = "Longitude",
+       y = "Latitude",
+       color = "C (%)") +
+  theme_minimal()
+```
+```{r}
+#combine Ap horizon samples, which are all the rows not in CN
+perry_CN_Ap <- perry_CN_final %>%
+  #filter to rows 404-414
+  slice(-404:-414)%>%
+  slice(-1:-315) %>%
+  select(-sample_group)
+
+perry_Ap_Hz_depths <- read.csv("../data_do_not_push/Perry_FP_Ap_with_depths_cm.csv")
+perry_Ap_Hz_points <- read.csv("../data_do_not_push/Ap_results_1_26_26.csv")
+
+
+# 1) Make a clean key from the points table (extract the first number in Sample)
+perry_Ap_Hz_points2 <- perry_Ap_Hz_points %>%
+  mutate(
+    sample_id_lab = as.integer(str_extract(Sample, "\\d+")),
+    Point_from_sample = str_extract(Sample, "P\\d+"),
+    Horizon_from_sample = str_extract(Sample, "(?<=-\\s)\\w+$")  # last token
+  )
+
+# 2) Make a clean key from the depths table
+perry_Ap_Hz_depths2 <- perry_Ap_Hz_depths %>%
+  mutate(sample_id_lab = as.integer(Sample.ID.Lab)) %>%
+  select(-Sample.ID.Lab)
+
+# 3) If your CN table uses Lab as the id, standardize it too
+# (If perry_CN_Ap already has sample_id_lab, skip this mutate)
+perry_CN_Ap2 <- perry_CN_Ap %>%
+  mutate(sample_id_lab = as.integer(sample_id))
+
+# 4) Join: CN -> depths -> points
+perry_CN_Ap_final <- perry_CN_Ap2 %>%
+  inner_join(perry_Ap_Hz_depths2, by = "sample_id_lab") %>%
+  inner_join(perry_Ap_Hz_points2, by = "sample_id_lab") %>%
+  select(-year, -Lab)  # drop if present / unwanted
+
+# 5) Quick checks
+nrow(perry_CN_Ap_final)
+anti_join(perry_CN_Ap2, perry_Ap_Hz_depths2, by = "sample_id_lab") %>% head()
+anti_join(perry_CN_Ap2, perry_Ap_Hz_points2, by = "sample_id_lab") %>% head()
+
+
+#map out c pct for Ap horizon samples
+
+perry_CN_Ap_final <- perry_CN_Ap_final %>%
+ select(sample_id, C_pct, N_pct, LBC.1, LBCeq, Ca, Mg, K, pH.2, P, Zn, Mn) %>%
+  #set sample id as numeric
+  mutate(sample_id = as.numeric(sample_id))
+```
+
+```{r}
+full_hz_data_perry <- read_csv("../data_do_not_push/merged_fp_lpsa_02_10_2026_clean.csv")
+
+#merge sample.id.lab with sample_id in perry_CN_Ap_final
+full_hz_data_perry2 <- full_hz_data_perry %>%
+  mutate(sample_id = as.integer(Sample.ID.Lab)) %>%
+  inner_join(perry_CN_Ap_final, by = "sample_id") %>%
+  select(-sample_id) %>%
+  #filter by LBC not NA
+  filter(!is.na(LBC.1))
+
+#last dataset. Has locations:
+
+Ap_locs <- read.csv("../data_do_not_push/Perry_full_profile_points.csv")
+#POINT ID is the same as Point from full_hz_data_perry2, so join on that:
+# Minimal hygiene: character + trim (does NOT change values)
+full_hz_data_perry2_clean <- full_hz_data_perry2 %>%
+  mutate(Point = str_trim(as.character(Point)))
+
+Ap_locs_clean <- Ap_locs %>%
+  mutate(PointID = str_trim(as.character(Point_ID))) %>%
+#keep Point_ID, Point_X, and Point_Y
+  select(Point_ID, POINT_X, POINT_Y)
+# Merge
+perry_Ap_merged <- full_hz_data_perry2_clean %>%
+  left_join(
+    Ap_locs_clean,
+    by = c("Point" = "Point_ID")
+  )
+
+#save as .csv:
+write_csv(perry_Ap_merged, "../output_do_not_push/perry_Ap_data_full_02_10_2026.csv")
+#plot C pct:
+ggplot(perry_Ap_merged, aes(x = POINT_X, y = POINT_Y)) +
+  geom_point(aes(color = C_pct), size = 3) +
+  scale_color_viridis_c(option = "plasma", limits = c(0, 2)) +
+  labs(title = "Soil Carbon Percentage at Perry Site Ap Horizon Samples",
+       x = "Longitude",
+       y = "Latitude",
+       color = "C (%)") +
+  theme_minimal()
+#plot pH:
+ggplot(perry_Ap_merged, aes(x = POINT_X, y = POINT_Y
+)) +
+  geom_point(aes(color = pH.2), size = 3) +
+  scale_color_viridis_c(option = "plasma", limits = c(4, 8)) +
+  labs(title = "Soil pH at Perry Site Ap Horizon Samples",
+       x = "Longitude",
+       y = "Latitude",
+       color = "pH") +
+  theme_minimal()
+```
+
+

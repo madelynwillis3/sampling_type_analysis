@@ -21,6 +21,8 @@ library(broom)
 library(scales)
 library(car)
 library(kableExtra)
+library(e1071)
+library(corrplot)
 ```
 
 
@@ -91,6 +93,9 @@ lime_long <- lime_clean %>%
 
 ```
 
+
+
+
 ### Exploratory Plots
 
 ```{r}
@@ -158,6 +163,261 @@ ggsave("../output_do_not_push/nutrient_density_plots_by_sampling_type.png",
 
 ```
 
+```{r all_standard_checks, message=FALSE, warning=FALSE}
+
+# =========================================================
+# ALL-IN-ONE DATA + MODEL CHECKS
+# Assumes lime_clean already exists from your cleaning code
+# =========================================================
+
+# --- 1. Rebuild long data for checks ---
+check_long <- lime_clean %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  pivot_longer(cols = all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    nutrient = factor(nutrient, levels = nutrients_all),
+    sampling_type3 = case_when(
+      type == "0-4" ~ "Composite 0-10 cm",
+      type == "4-8" ~ "Composite 10-20 cm",
+      type %in% c("A", "B") ~ "Single Point (A+B)",
+      TRUE ~ NA_character_
+    ),
+    sampling_type3 = factor(
+      sampling_type3,
+      levels = c("Composite 0-10 cm", "Composite 10-20 cm", "Single Point (A+B)")
+    )
+  ) %>%
+  filter(!is.na(sampling_type3))
+
+# --- 2. Basic structure checks ---
+cat("===== BASIC STRUCTURE =====\n")
+glimpse(lime_clean)
+
+cat("\n===== MISSINGNESS BY NUTRIENT =====\n")
+missing_summary <- lime_clean %>%
+  summarise(across(all_of(nutrients_all), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "nutrient", values_to = "n_missing") %>%
+  arrange(desc(n_missing))
+print(missing_summary)
+
+cat("\n===== GROUP COUNTS =====\n")
+group_counts <- lime_clean %>%
+  count(site, sample_site, sampling_class, comp_depth, sp_rep)
+print(group_counts, n = 50)
+
+cat("\n===== RECORDS PER LOCATION_ID =====\n")
+location_counts <- lime_clean %>%
+  count(location_id) %>%
+  count(n, name = "n_locations")
+print(location_counts)
+
+cat("\n===== LOCATIONS WITH UNEXPECTED RECORD COUNTS =====\n")
+odd_locations <- lime_clean %>%
+  count(location_id) %>%
+  filter(n != 4)
+print(odd_locations, n = 50)
+
+# --- 3. Distribution summaries by nutrient x sampling group ---
+cat("\n===== DISTRIBUTION SUMMARY =====\n")
+dist_summary <- check_long %>%
+  group_by(nutrient, sampling_type3) %>%
+  summarise(
+    n = sum(!is.na(value)),
+    mean = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    skewness = e1071::skewness(value, na.rm = TRUE, type = 2),
+    kurtosis = e1071::kurtosis(value, na.rm = TRUE, type = 2),
+    .groups = "drop"
+  )
+print(dist_summary, n = 100)
+
+# --- 4. Shapiro normality by nutrient x sampling group ---
+cat("\n===== SHAPIRO NORMALITY TESTS =====\n")
+normality_results <- check_long %>%
+  filter(!is.na(value)) %>%
+  group_by(nutrient, sampling_type3) %>%
+  summarise(
+    n = n(),
+    shapiro_p = if (n() >= 3 && n() <= 5000) shapiro.test(value)$p.value else NA_real_,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    normality_flag = case_when(
+      is.na(shapiro_p) ~ "not tested",
+      shapiro_p < 0.05 ~ "non-normal",
+      TRUE ~ "approx. normal"
+    )
+  )
+print(normality_results, n = 100)
+
+# --- 5. Homogeneity of variance across sampling groups ---
+cat("\n===== LEVENE VARIANCE TESTS =====\n")
+variance_results <- check_long %>%
+  filter(!is.na(value)) %>%
+  group_by(nutrient) %>%
+  group_modify(~{
+    lev <- car::leveneTest(value ~ sampling_type3, data = .x)
+    tibble(
+      levene_f = lev$`F value`[1],
+      levene_p = lev$`Pr(>F)`[1]
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    variance_flag = case_when(
+      is.na(levene_p) ~ "not tested",
+      levene_p < 0.05 ~ "heterogeneous variance",
+      TRUE ~ "roughly homogeneous variance"
+    )
+  )
+print(variance_results, n = 100)
+
+# --- 6. Correlation among nutrients ---
+cat("\n===== SPEARMAN CORRELATION MATRIX =====\n")
+corr_data <- lime_clean %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  select(all_of(nutrients_all))
+
+corr_mat <- cor(corr_data, use = "pairwise.complete.obs", method = "spearman")
+print(round(corr_mat, 2))
+
+corrplot::corrplot(
+  corr_mat,
+  method = "color",
+  type = "upper",
+  tl.col = "black",
+  tl.cex = 0.8
+)
+
+# --- 7. Residual diagnostics from simple fixed-effects linear models ---
+# Model form: value ~ sampling_type3
+# This is mainly for checking whether residuals look remotely usable
+# You can later replace with a fuller model if needed.
+
+cat("\n===== RESIDUAL DIAGNOSTICS: LINEAR MODELS =====\n")
+
+resid_diag <- check_long %>%
+  filter(!is.na(value), !is.na(sampling_type3)) %>%
+  group_by(nutrient) %>%
+  group_modify(~{
+    dat <- .x
+    
+    mod <- lm(value ~ sampling_type3, data = dat)
+    res <- resid(mod)
+    fit <- fitted(mod)
+    
+    tibble(
+      n = nrow(dat),
+      resid_shapiro_p = if(length(res) >= 3 && length(res) <= 5000) shapiro.test(res)$p.value else NA_real_,
+      resid_mean = mean(res, na.rm = TRUE),
+      resid_sd = sd(res, na.rm = TRUE),
+      model_r2 = summary(mod)$r.squared
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    resid_normality_flag = case_when(
+      is.na(resid_shapiro_p) ~ "not tested",
+      resid_shapiro_p < 0.05 ~ "residuals non-normal",
+      TRUE ~ "residuals approx. normal"
+    )
+  )
+
+print(resid_diag, n = 100)
+
+# --- 8. Residual plots for each nutrient ---
+# Produces residual vs fitted and QQ plot for each nutrient
+
+resid_plot_data <- check_long %>%
+  filter(!is.na(value), !is.na(sampling_type3)) %>%
+  group_split(nutrient)
+
+resid_plot_list <- purrr::map(resid_plot_data, function(dat) {
+  nutr <- unique(dat$nutrient)
+  mod <- lm(value ~ sampling_type3, data = dat)
+  
+  aug <- broom::augment(mod)
+  
+  p1 <- ggplot(aug, aes(x = .fitted, y = .resid)) +
+    geom_point(alpha = 0.7) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste(nutr, "- Residuals vs Fitted"),
+      x = "Fitted values",
+      y = "Residuals"
+    )
+  
+  p2 <- ggplot(aug, aes(sample = .std.resid)) +
+    stat_qq(alpha = 0.7) +
+    stat_qq_line(color = "red") +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste(nutr, "- Normal Q-Q"),
+      x = "Theoretical quantiles",
+      y = "Standardized residuals"
+    )
+  
+  p1 + p2
+})
+
+for(i in seq_along(resid_plot_list)) {
+  print(resid_plot_list[[i]])
+}
+
+# --- 9. Optional mixed model residual checks ---
+# Use this only if you want to account for repeated structure by site/sample_site/location_id
+# Adjust random effects if this overfits or becomes singular
+
+cat("\n===== OPTIONAL MIXED MODEL RESIDUAL CHECKS =====\n")
+
+mixed_diag <- check_long %>%
+  filter(!is.na(value), !is.na(sampling_type3)) %>%
+  group_by(nutrient) %>%
+  group_modify(~{
+    dat <- .x
+    
+    out <- tryCatch({
+      mod <- lmer(value ~ sampling_type3 + (1|site) + (1|sample_site), data = dat)
+      res <- resid(mod)
+      tibble(
+        n = nrow(dat),
+        singular = lme4::isSingular(mod, tol = 1e-5),
+        AIC = AIC(mod),
+        resid_shapiro_p = if(length(res) >= 3 && length(res) <= 5000) shapiro.test(res)$p.value else NA_real_
+      )
+    }, error = function(e) {
+      tibble(
+        n = nrow(dat),
+        singular = NA,
+        AIC = NA_real_,
+        resid_shapiro_p = NA_real_
+      )
+    })
+    
+    out
+  }) %>%
+  ungroup()
+
+print(mixed_diag, n = 100)
+
+# --- 10. Save key tables if wanted ---
+write_csv(normality_results, "../output_do_not_push/standard_checks/normality_results.csv")
+write_csv(variance_results, "../output_do_not_push/standard_checks/variance_results.csv")
+write_csv(resid_diag, "../output_do_not_push/standard_checks/residual_diagnostics_lm.csv")
+write_csv(mixed_diag, "../output_do_not_push/standard_checks/residual_diagnostics_mixed.csv")
+
+```
+
+```{r}
+#spatial checks:
+```
+
+
 ```{r}
 nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
 nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
@@ -194,6 +454,7 @@ normality_3types %>%
   group_by(group) %>%
   summarise(percent_normal = mean(shapiro_p > 0.05, na.rm = TRUE))
 #none are normal. 0 out of 9 for almost all are abnormal
+
 ```
 
 ### Wilcoxon Rank Tests on Forage Sites

@@ -1,0 +1,2124 @@
+  ---
+title: "sampling_type_analysis_04_06_2026"
+format: html
+---
+###Load Libraries
+
+```{r load libraries}
+library(tidyverse)
+library(rstatix)
+library(multcompView)
+library(tidyverse)
+library(ggplot2)
+library(janitor)
+library(stringr)
+library(dplyr)
+library(leaflet)
+library(sf)
+library(patchwork)
+library(purrr)
+library(lme4)
+library(lmerTest)
+library(dbscan)
+library(broom)
+library(scales)
+library(car)
+library(kableExtra)
+library(e1071)
+library(corrplot)
+library(tidyr)
+library(ggrepel)
+library(multcompView)
+library(rstatix)
+library(sf)
+library(sp)
+library(gstat)
+library(spdep)
+library(tidyverse)
+library(sf)
+library(FNN)
+
+```
+
+
+### Load + Clean Data:
+
+```{r data pull, echo=FALSE, message=FALSE, warning=FALSE}
+# -----------------------------
+# Load + clean to analysis-ready
+# -----------------------------
+
+nutrients <- c("lbc_1","lb_ceq","p_h_2","ca","k","mg","mn","p","zn")
+
+lime_clean <- read_csv("../data_do_not_push/2021 Liming Study Soil Data Compiled (lbs. A).csv") %>%
+  clean_names() %>%
+  separate(sample, into = c("type", "sample_site"), sep = ",\\s*", remove = TRUE) %>%
+  mutate(
+    # standardize site label
+    sample_site = str_squish(sample_site),
+    sample_site = str_to_lower(sample_site),
+    sample_site = str_replace_all(sample_site, "\\s+", "_"),
+
+    # standardize type labels
+    type = str_squish(type),
+
+    # classify sampling category + depth
+    sampling_class = case_when(
+      type %in% c("A","B") ~ "SP",
+      type %in% c("0-4","4-8") ~ "C",
+      TRUE ~ NA_character_
+    ),
+    depth = case_when(
+      type == "0-4" ~ "0-4",
+      type == "4-8" ~ "4-8",
+      type %in% c("A","B") ~ NA_character_,
+      TRUE ~ NA_character_
+    ),
+
+    # replicate id for SP
+    sp_rep = case_when(
+      type == "A" ~ "A",
+      type == "B" ~ "B",
+      TRUE ~ NA_character_
+    ),
+
+    # composite depth label (useful later)
+    comp_depth = case_when(
+      sampling_class == "C" ~ depth,
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  # create a stable location id (site + sample site + coords)
+  group_by(site, sample_site, lat, long) %>%
+  mutate(location_id = cur_group_id()) %>%
+  ungroup() %>%
+  # keep only relevant types
+  filter(type %in% c("0-4","4-8","A","B")) %>%
+  # make key factors ordered
+  mutate(
+    sampling_class = factor(sampling_class, levels = c("SP","C")),
+    comp_depth = factor(comp_depth, levels = c("0-4","4-8")),
+    sp_rep = factor(sp_rep, levels = c("A","B"))
+  )
+
+# Long format for plotting / modeling
+lime_long <- lime_clean %>%
+  pivot_longer(cols = all_of(nutrients), names_to = "nutrient", values_to = "value") %>%
+  mutate(nutrient = factor(nutrient, levels = nutrients))
+
+```
+
+
+
+
+### Exploratory Plots
+
+```{r}
+#distribution curves of 0-4 comps vs 4-8 comps vs SP A and B (A and Bs can be together)
+nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
+
+nutrient_names <- c(
+  "ca"     = "Calcium (Ca)",
+  "k"      = "Potassium (K)",
+  "mg"     = "Magnesium (Mg)",
+  "mn"     = "Manganese (Mn)",
+  "p"      = "Phosphorus (P)",
+  "zn"     = "Zinc (Zn)",
+  "p_h_2"  = "pH",
+  "lbc_1"  = "Lime Buffer Capacity (LBC)",
+  "lb_ceq" = "Lime Buffer Capacity Equivalent (LBCeq)"
+)
+
+lime_plot <- lime_clean %>%
+  # log1p everything except pH (this is the key change)
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  pivot_longer(all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    sampling_type3 = case_when(
+      type == "0-4" ~ "Composite 0–10 cm",
+      type == "4-8" ~ "Composite 10-20 cm",
+      type %in% c("A","B") ~ "Single Point (A+B)",
+      TRUE ~ NA_character_
+    ),
+    sampling_type3 = factor(
+      sampling_type3,
+      levels = c("Composite 0–10 cm", "Composite 10-20 cm", "Single Point (A+B)")
+    ),
+    nutrient = dplyr::recode(nutrient, !!!nutrient_names),
+    nutrient = factor(nutrient, levels = unname(nutrient_names))
+  ) %>%
+  filter(!is.na(sampling_type3), !is.na(value))
+
+p_den <- ggplot(lime_plot, aes(x = value, fill = sampling_type3)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ nutrient, scales = "free") +
+  scale_fill_manual(
+    values = c(
+      "Composite 0–10 cm" = "#1f77b4",
+      "Composite 10-20 cm" = "#2ca02c",
+      "Single Point (A+B)" = "#ff7f0e"
+    ),
+    na.translate = FALSE
+  ) +
+  labs(
+    x = "Value (log1p-transformed except pH)",
+    y = "Density",
+    title = "Density Plots of Bermuda Hay Grassland Soil Nutrients by Sampling Type",
+    fill = "Sampling Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+p_den
+
+
+ggsave("../output_do_not_push/nutrient_density_plots_by_sampling_type.png",
+       p_den, width = 12, height = 8, dpi = 300, units = "in", limitsize = FALSE)
+
+```
+
+```{r all_standard_checks, message=FALSE, warning=FALSE}
+
+# =========================================================
+# ALL-IN-ONE DATA + MODEL CHECKS
+# Assumes lime_clean already exists from  cleaning code
+# =========================================================
+
+# --- 1. Rebuild long data for checks ---
+check_long <- lime_clean %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  pivot_longer(cols = all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    nutrient = factor(nutrient, levels = nutrients_all),
+    sampling_type3 = case_when(
+      type == "0-4" ~ "Composite 0-10 cm",
+      type == "4-8" ~ "Composite 10-20 cm",
+      type %in% c("A", "B") ~ "Single Point (A+B)",
+      TRUE ~ NA_character_
+    ),
+    sampling_type3 = factor(
+      sampling_type3,
+      levels = c("Composite 0-10 cm", "Composite 10-20 cm", "Single Point (A+B)")
+    )
+  ) %>%
+  filter(!is.na(sampling_type3))
+
+# --- 2. Basic structure checks ---
+cat("===== BASIC STRUCTURE =====\n")
+glimpse(lime_clean)
+
+cat("\n===== MISSINGNESS BY NUTRIENT =====\n")
+missing_summary <- lime_clean %>%
+  summarise(across(all_of(nutrients_all), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "nutrient", values_to = "n_missing") %>%
+  arrange(desc(n_missing))
+print(missing_summary)
+
+cat("\n===== GROUP COUNTS =====\n")
+group_counts <- lime_clean %>%
+  count(site, sample_site, sampling_class, comp_depth, sp_rep)
+print(group_counts, n = 50)
+
+cat("\n===== RECORDS PER LOCATION_ID =====\n")
+location_counts <- lime_clean %>%
+  count(location_id) %>%
+  count(n, name = "n_locations")
+print(location_counts)
+
+cat("\n===== LOCATIONS WITH UNEXPECTED RECORD COUNTS =====\n")
+odd_locations <- lime_clean %>%
+  count(location_id) %>%
+  filter(n != 4)
+print(odd_locations, n = 50)
+
+# --- 3. Distribution summaries by nutrient x sampling group ---
+cat("\n===== DISTRIBUTION SUMMARY =====\n")
+dist_summary <- check_long %>%
+  group_by(nutrient, sampling_type3) %>%
+  summarise(
+    n = sum(!is.na(value)),
+    mean = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    min = min(value, na.rm = TRUE),
+    max = max(value, na.rm = TRUE),
+    skewness = e1071::skewness(value, na.rm = TRUE, type = 2),
+    kurtosis = e1071::kurtosis(value, na.rm = TRUE, type = 2),
+    .groups = "drop"
+  )
+print(dist_summary, n = 100)
+
+# --- 4. Shapiro normality by nutrient x sampling group ---
+cat("\n===== SHAPIRO NORMALITY TESTS =====\n")
+normality_results <- check_long %>%
+  filter(!is.na(value)) %>%
+  group_by(nutrient, sampling_type3) %>%
+  summarise(
+    n = n(),
+    shapiro_p = if (n() >= 3 && n() <= 5000) shapiro.test(value)$p.value else NA_real_,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    normality_flag = case_when(
+      is.na(shapiro_p) ~ "not tested",
+      shapiro_p < 0.05 ~ "non-normal",
+      TRUE ~ "approx. normal"
+    )
+  )
+print(normality_results, n = 100)
+
+# --- 5. Homogeneity of variance across sampling groups ---
+cat("\n===== LEVENE VARIANCE TESTS =====\n")
+variance_results <- check_long %>%
+  filter(!is.na(value)) %>%
+  group_by(nutrient) %>%
+  group_modify(~{
+    lev <- car::leveneTest(value ~ sampling_type3, data = .x)
+    tibble(
+      levene_f = lev$`F value`[1],
+      levene_p = lev$`Pr(>F)`[1]
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    variance_flag = case_when(
+      is.na(levene_p) ~ "not tested",
+      levene_p < 0.05 ~ "heterogeneous variance",
+      TRUE ~ "roughly homogeneous variance"
+    )
+  )
+print(variance_results, n = 100)
+
+# --- 6. Correlation among nutrients ---
+cat("\n===== SPEARMAN CORRELATION MATRIX =====\n")
+corr_data <- lime_clean %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  select(all_of(nutrients_all))
+
+corr_mat <- cor(corr_data, use = "pairwise.complete.obs", method = "spearman")
+print(round(corr_mat, 2))
+
+corrplot::corrplot(
+  corr_mat,
+  method = "color",
+  type = "upper",
+  tl.col = "black",
+  tl.cex = 0.8
+)
+
+# --- 7. Residual diagnostics from simple fixed-effects linear models ---
+# Model form: value ~ sampling_type3
+# This is mainly for checking whether residuals look remotely usable
+#  can later replace with a fuller model if needed.
+
+cat("\n===== RESIDUAL DIAGNOSTICS: LINEAR MODELS =====\n")
+
+resid_diag <- check_long %>%
+  filter(!is.na(value), !is.na(sampling_type3)) %>%
+  group_by(nutrient) %>%
+  group_modify(~{
+    dat <- .x
+    
+    mod <- lm(value ~ sampling_type3, data = dat)
+    res <- resid(mod)
+    fit <- fitted(mod)
+    
+    tibble(
+      n = nrow(dat),
+      resid_shapiro_p = if(length(res) >= 3 && length(res) <= 5000) shapiro.test(res)$p.value else NA_real_,
+      resid_mean = mean(res, na.rm = TRUE),
+      resid_sd = sd(res, na.rm = TRUE),
+      model_r2 = summary(mod)$r.squared
+    )
+  }) %>%
+  ungroup() %>%
+  mutate(
+    resid_normality_flag = case_when(
+      is.na(resid_shapiro_p) ~ "not tested",
+      resid_shapiro_p < 0.05 ~ "residuals non-normal",
+      TRUE ~ "residuals approx. normal"
+    )
+  )
+
+print(resid_diag, n = 100)
+
+# --- 8. Residual plots for each nutrient ---
+# Produces residual vs fitted and QQ plot for each nutrient
+
+resid_plot_data <- check_long %>%
+  filter(!is.na(value), !is.na(sampling_type3)) %>%
+  group_split(nutrient)
+
+resid_plot_list <- purrr::map(resid_plot_data, function(dat) {
+  nutr <- unique(dat$nutrient)
+  mod <- lm(value ~ sampling_type3, data = dat)
+  
+  aug <- broom::augment(mod)
+  
+  p1 <- ggplot(aug, aes(x = .fitted, y = .resid)) +
+    geom_point(alpha = 0.7) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste(nutr, "- Residuals vs Fitted"),
+      x = "Fitted values",
+      y = "Residuals"
+    )
+  
+  p2 <- ggplot(aug, aes(sample = .std.resid)) +
+    stat_qq(alpha = 0.7) +
+    stat_qq_line(color = "red") +
+    theme_minimal(base_size = 11) +
+    labs(
+      title = paste(nutr, "- Normal Q-Q"),
+      x = "Theoretical quantiles",
+      y = "Standardized residuals"
+    )
+  
+  p1 + p2
+})
+
+for(i in seq_along(resid_plot_list)) {
+  print(resid_plot_list[[i]])
+}
+
+# --- 9. Optional mixed model residual checks ---
+# Use this only to account for repeated structure by site/sample_site/location_id
+# Adjust random effects if this overfits or becomes singular
+
+cat("\n===== OPTIONAL MIXED MODEL RESIDUAL CHECKS =====\n")
+
+mixed_diag <- check_long %>%
+  filter(!is.na(value), !is.na(sampling_type3)) %>%
+  group_by(nutrient) %>%
+  group_modify(~{
+    dat <- .x
+    
+    out <- tryCatch({
+      mod <- lmer(value ~ sampling_type3 + (1|site) + (1|sample_site), data = dat)
+      res <- resid(mod)
+      tibble(
+        n = nrow(dat),
+        singular = lme4::isSingular(mod, tol = 1e-5),
+        AIC = AIC(mod),
+        resid_shapiro_p = if(length(res) >= 3 && length(res) <= 5000) shapiro.test(res)$p.value else NA_real_
+      )
+    }, error = function(e) {
+      tibble(
+        n = nrow(dat),
+        singular = NA,
+        AIC = NA_real_,
+        resid_shapiro_p = NA_real_
+      )
+    })
+    
+    out
+  }) %>%
+  ungroup()
+
+print(mixed_diag, n = 100)
+
+# --- 10. Save key tables if wanted ---
+write_csv(normality_results, "../output_do_not_push/standard_checks/normality_results.csv")
+write_csv(variance_results, "../output_do_not_push/standard_checks/variance_results.csv")
+write_csv(resid_diag, "../output_do_not_push/standard_checks/residual_diagnostics_lm.csv")
+write_csv(mixed_diag, "../output_do_not_push/standard_checks/residual_diagnostics_mixed.csv")
+
+```
+
+
+```{r location_level_exploration, message=FALSE, warning=FALSE}
+# =========================================================
+# LOCATION-LEVEL WIDE DATA + EXPLORATION
+# =========================================================
+
+nutrients_all <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+nutrients_to_log <- setdiff(nutrients_all, "p_h_2")
+
+# ---------------------------------------------------------
+# 1. Create a clean sample label
+# ---------------------------------------------------------
+lime_tagged <- lime_clean %>%
+  mutate(
+    sample_type = case_when(
+      type == "A"   ~ "SP_A",
+      type == "B"   ~ "SP_B",
+      type == "0-4" ~ "COMP_0_10",
+      type == "4-8" ~ "COMP_10_20",
+      TRUE ~ NA_character_
+    ),
+    sample_type = factor(
+      sample_type,
+      levels = c("SP_A", "SP_B", "COMP_0_10", "COMP_10_20")
+    )
+  )
+
+# quick confirmation
+lime_tagged %>%
+  count(site, sample_type)
+
+# ---------------------------------------------------------
+# 2. Build location-level wide dataset
+# one row = one location_id
+# ---------------------------------------------------------
+lime_wide <- lime_tagged %>%
+  select(site, sample_site, location_id, lat, long, sample_type, all_of(nutrients_all)) %>%
+  pivot_wider(
+    names_from = sample_type,
+    values_from = all_of(nutrients_all),
+    names_glue = "{.value}_{sample_type}"
+  ) %>%
+  arrange(site, sample_site)
+
+glimpse(lime_wide)
+
+# ---------------------------------------------------------
+# 3. Create SP summaries from A and B
+# mean, median, abs diff, signed diff
+# ---------------------------------------------------------
+for (nut in nutrients_all) {
+  a_col <- paste0(nut, "_SP_A")
+  b_col <- paste0(nut, "_SP_B")
+  
+  lime_wide[[paste0(nut, "_SP_mean")]]   <- rowMeans(lime_wide[, c(a_col, b_col)], na.rm = TRUE)
+  lime_wide[[paste0(nut, "_SP_median")]] <- apply(lime_wide[, c(a_col, b_col)], 1, median, na.rm = TRUE)
+  lime_wide[[paste0(nut, "_SP_absdiff")]] <- abs(lime_wide[[a_col]] - lime_wide[[b_col]])
+  lime_wide[[paste0(nut, "_SP_diff")]]    <- lime_wide[[a_col]] - lime_wide[[b_col]]
+}
+
+# peek
+lime_wide %>%
+  select(site, sample_site, location_id,
+         ca_SP_A, ca_SP_B, ca_SP_mean, ca_COMP_0_10, ca_COMP_10_20) %>%
+  print(n = 10)
+
+# ---------------------------------------------------------
+# 4. A vs B agreement summaries
+# ---------------------------------------------------------
+ab_agreement <- purrr::map_dfr(nutrients_all, function(nut) {
+  a <- lime_wide[[paste0(nut, "_SP_A")]]
+  b <- lime_wide[[paste0(nut, "_SP_B")]]
+  d <- a - b
+  m <- (a + b) / 2
+  
+  tibble(
+    nutrient = nut,
+    n = sum(!is.na(a) & !is.na(b)),
+    mean_A = mean(a, na.rm = TRUE),
+    mean_B = mean(b, na.rm = TRUE),
+    mean_diff = mean(d, na.rm = TRUE),
+    median_abs_diff = median(abs(d), na.rm = TRUE),
+    mean_abs_diff = mean(abs(d), na.rm = TRUE),
+    spearman_rho = cor(a, b, method = "spearman", use = "complete.obs"),
+    pearson_r = cor(a, b, method = "pearson", use = "complete.obs")
+  )
+})
+
+ab_agreement
+
+# optional save
+# write_csv(ab_agreement, "../output_do_not_push/ab_agreement_summary.csv")
+
+# ---------------------------------------------------------
+# 5. Long table for A vs B plotting
+# ---------------------------------------------------------
+ab_long <- lime_tagged %>%
+  filter(sample_type %in% c("SP_A", "SP_B")) %>%
+  select(site, sample_site, location_id, sample_type, all_of(nutrients_all)) %>%
+  pivot_longer(cols = all_of(nutrients_all), names_to = "nutrient", values_to = "value")
+
+# ---------------------------------------------------------
+# 6. Site x sample-type exploratory plots
+# Use log1p for all except pH
+# ---------------------------------------------------------
+plot_long <- lime_tagged %>%
+  mutate(across(all_of(nutrients_to_log), ~ log1p(.))) %>%
+  pivot_longer(cols = all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    sample_type = factor(sample_type, levels = c("SP_A", "SP_B", "COMP_0_10", "COMP_10_20"))
+  )
+
+# boxplots by site and sample type
+p_site_box <- ggplot(plot_long, aes(x = sample_type, y = value, fill = sample_type)) +
+  geom_boxplot(alpha = 0.75, outlier.alpha = 0.4) +
+  facet_grid(nutrient ~ site, scales = "free_y") +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  ) +
+  labs(
+    x = "Sample type",
+    y = "Value (log1p except pH)",
+    title = "Soil nutrient distributions by site and sample type"
+  )
+
+p_site_box
+
+# optional
+# ggsave("../output_do_not_push/site_sampletype_boxplots.png",
+#        p_site_box, width = 14, height = 16, dpi = 300)
+
+# ---------------------------------------------------------
+# 7. SP A vs B scatterplots with 1:1 line
+# ---------------------------------------------------------
+ab_scatter_data <- purrr::map_dfr(nutrients_all, function(nut) {
+  tibble(
+    site = lime_wide$site,
+    sample_site = lime_wide$sample_site,
+    location_id = lime_wide$location_id,
+    nutrient = nut,
+    A = lime_wide[[paste0(nut, "_SP_A")]],
+    B = lime_wide[[paste0(nut, "_SP_B")]]
+  )
+})
+
+p_ab_scatter <- ggplot(ab_scatter_data, aes(x = A, y = B, color = site)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~ nutrient, scales = "free") +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Agreement between SP A and SP B",
+    x = "SP A",
+    y = "SP B"
+  )
+
+p_ab_scatter
+
+# optional
+# ggsave("../output_do_not_push/SPA_SPB_scatterplots.png",
+#        p_ab_scatter, width = 12, height = 8, dpi = 300)
+
+# ---------------------------------------------------------
+# 8. Bland-Altman style plots for A vs B
+# ---------------------------------------------------------
+ab_ba_data <- purrr::map_dfr(nutrients_all, function(nut) {
+  a <- lime_wide[[paste0(nut, "_SP_A")]]
+  b <- lime_wide[[paste0(nut, "_SP_B")]]
+  
+  tibble(
+    site = lime_wide$site,
+    sample_site = lime_wide$sample_site,
+    location_id = lime_wide$location_id,
+    nutrient = nut,
+    mean_ab = (a + b) / 2,
+    diff_ab = a - b
+  )
+})
+
+p_ba <- ggplot(ab_ba_data, aes(x = mean_ab, y = diff_ab, color = site)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~ nutrient, scales = "free") +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Bland-Altman style plots for SP A vs SP B",
+    x = "Mean of A and B",
+    y = "A - B"
+  )
+
+p_ba
+
+# ---------------------------------------------------------
+# 9. Build location-level repeated table for later tests
+# Table for Friedman / paired tests
+# ---------------------------------------------------------
+repeated_long <- purrr::map_dfr(nutrients_all, function(nut) {
+  tibble(
+    site = lime_wide$site,
+    sample_site = lime_wide$sample_site,
+    location_id = lime_wide$location_id,
+    nutrient = nut,
+    SP_mean = lime_wide[[paste0(nut, "_SP_mean")]],
+    COMP_0_10 = lime_wide[[paste0(nut, "_COMP_0_10")]],
+    COMP_10_20 = lime_wide[[paste0(nut, "_COMP_10_20")]]
+  )
+}) %>%
+  pivot_longer(cols = c(SP_mean, COMP_0_10, COMP_10_20),
+               names_to = "sample_support",
+               values_to = "value") %>%
+  mutate(
+    sample_support = factor(sample_support, levels = c("SP_mean", "COMP_0_10", "COMP_10_20"))
+  )
+
+repeated_long %>%
+  count(site, nutrient, sample_support)
+
+# optional save
+write_csv(lime_wide, "../output_do_not_push/standard_checks/lime_wide_location_level.csv")
+write_csv(repeated_long, "../output_do_not_push/standard_checks/repeated_long_for_tests.csv")
+
+```
+```{r formal_repeated_tests, message=FALSE, warning=FALSE}
+
+
+# repeated_long assumed to already exist
+# columns: site, sample_site, location_id, nutrient, sample_support, value
+# sample_support levels: SP_mean, COMP_0_10, COMP_10_20
+
+# ---------------------------------------------------------
+# 1. Friedman tests pooled across all sites
+# ---------------------------------------------------------
+friedman_all <- repeated_long %>%
+  group_by(nutrient) %>%
+  friedman_test(value ~ sample_support | location_id) %>%
+  ungroup() %>%
+  mutate(p_adj_BH = p.adjust(p, method = "BH"))
+
+friedman_all
+
+# ---------------------------------------------------------
+# 2. Post hoc paired Wilcoxon pooled across all sites
+# ---------------------------------------------------------
+pairwise_all <- repeated_long %>%
+  group_by(nutrient) %>%
+  pairwise_wilcox_test(
+    value ~ sample_support,
+    paired = TRUE,
+    p.adjust.method = "BH"
+  ) %>%
+  ungroup()
+
+pairwise_all
+
+# ---------------------------------------------------------
+# 3. Friedman tests within site
+# ---------------------------------------------------------
+friedman_by_site <- repeated_long %>%
+  group_by(site, nutrient) %>%
+  friedman_test(value ~ sample_support | location_id) %>%
+  ungroup() %>%
+  group_by(site) %>%
+  mutate(p_adj_BH = p.adjust(p, method = "BH")) %>%
+  ungroup()
+
+friedman_by_site
+
+# ---------------------------------------------------------
+# 4. Post hoc paired Wilcoxon within site
+# ---------------------------------------------------------
+pairwise_by_site <- repeated_long %>%
+  group_by(site, nutrient) %>%
+  pairwise_wilcox_test(
+    value ~ sample_support,
+    paired = TRUE,
+    p.adjust.method = "BH"
+  ) %>%
+  ungroup()
+
+pairwise_by_site
+
+# ---------------------------------------------------------
+# 5. Effect-size style summaries to help interpretation
+# ---------------------------------------------------------
+support_summary <- repeated_long %>%
+  group_by(site, nutrient, sample_support) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+support_summary
+
+# ---------------------------------------------------------
+# 6. SP A vs SP B paired test for local heterogeneity / bias
+# ---------------------------------------------------------
+ab_long_for_test <- lime_tagged %>%
+  filter(sample_type %in% c("SP_A", "SP_B")) %>%
+  pivot_longer(cols = all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  select(site, sample_site, location_id, nutrient, sample_type, value)
+
+ab_wilcox <- ab_long_for_test %>%
+  group_by(nutrient) %>%
+  pairwise_wilcox_test(
+    value ~ sample_type,
+    paired = TRUE,
+    p.adjust.method = "BH"
+  ) %>%
+  ungroup()
+
+ab_wilcox
+
+# ---------------------------------------------------------
+# 7. Optional: site-specific A vs B
+# ---------------------------------------------------------
+ab_wilcox_by_site <- ab_long_for_test %>%
+  group_by(site, nutrient) %>%
+  pairwise_wilcox_test(
+    value ~ sample_type,
+    paired = TRUE,
+    p.adjust.method = "BH"
+  ) %>%
+  ungroup()
+
+ab_wilcox_by_site
+
+# ---------------------------------------------------------
+# 8. Save outputs if desired
+# ---------------------------------------------------------
+write_csv(friedman_all, "../output_do_not_push/lime_results/friedman_all.csv")
+write_csv(pairwise_all, "../output_do_not_push/lime_results/pairwise_all.csv")
+write_csv(friedman_by_site, "../output_do_not_push/lime_results/friedman_by_site.csv")
+write_csv(pairwise_by_site, "../output_do_not_push/lime_results/pairwise_by_site.csv")
+write_csv(support_summary, "../output_do_not_push/lime_results/support_summary.csv")
+write_csv(ab_wilcox, "../output_do_not_push/lime_results/ab_wilcox.csv")
+write_csv(ab_wilcox_by_site, "../output_do_not_push/lime_results/ab_wilcox_by_site.csv")
+
+
+#across all sites, all nutrients differ between SP (0-20) and COMP (0-10), except for pH and K, which are consistently non-significant. 
+
+
+```
+```{r summary_tables_for_writeup, message=FALSE, warning=FALSE}
+
+
+
+# 1) Pooled support summaries
+support_summary_all <- repeated_long %>%
+  group_by(nutrient, sample_support) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+support_summary_all
+
+# 2) Wide summary table for writing
+support_summary_wide <- support_summary_all %>%
+  select(nutrient, sample_support, median, IQR) %>%
+  pivot_wider(
+    names_from = sample_support,
+    values_from = c(median, IQR)
+  )
+
+support_summary_wide
+
+# 3) SP A vs B local variability
+ab_variability <- lime_wide %>%
+  transmute(
+    site, sample_site, location_id,
+    across(ends_with("_SP_absdiff"))
+  ) %>%
+  pivot_longer(
+    cols = ends_with("_SP_absdiff"),
+    names_to = "nutrient",
+    values_to = "abs_diff"
+  ) %>%
+  mutate(nutrient = str_remove(nutrient, "_SP_absdiff"))
+
+ab_variability_summary <- ab_variability %>%
+  group_by(nutrient) %>%
+  summarise(
+    n = n(),
+    median_abs_diff = median(abs_diff, na.rm = TRUE),
+    mean_abs_diff = mean(abs_diff, na.rm = TRUE),
+    IQR_abs_diff = IQR(abs_diff, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ab_variability_summary
+
+# 4) Same thing by site
+ab_variability_by_site <- ab_variability %>%
+  group_by(site, nutrient) %>%
+  summarise(
+    n = n(),
+    median_abs_diff = median(abs_diff, na.rm = TRUE),
+    mean_abs_diff = mean(abs_diff, na.rm = TRUE),
+    IQR_abs_diff = IQR(abs_diff, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ab_variability_by_site
+
+```
+
+```{r final_results_table, message=FALSE, warning=FALSE}
+
+
+
+# support_summary_wide assumed to exist
+# friedman_all assumed to exist
+# pairwise_all assumed to exist
+
+pairwise_labels <- pairwise_all %>%
+  mutate(
+    contrast = case_when(
+      group1 == "SP_mean"   & group2 == "COMP_0_10"  ~ "SP_vs_C0_10",
+      group1 == "SP_mean"   & group2 == "COMP_10_20" ~ "SP_vs_C10_20",
+      group1 == "COMP_0_10" & group2 == "COMP_10_20" ~ "C0_10_vs_C10_20",
+      TRUE ~ NA_character_
+    ),
+    sig = case_when(
+      p.adj <= 0.001 ~ "***",
+      p.adj <= 0.01  ~ "**",
+      p.adj <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  ) %>%
+  select(nutrient, contrast, p.adj, sig) %>%
+  pivot_wider(
+    names_from = contrast,
+    values_from = c(p.adj, sig)
+  )
+
+final_results_table <- support_summary_wide %>%
+  left_join(
+    friedman_all %>% select(nutrient, friedman_p = p, friedman_p_adj = p_adj_BH),
+    by = "nutrient"
+  ) %>%
+  left_join(pairwise_labels, by = "nutrient") %>%
+  mutate(
+    pattern = case_when(
+      median_COMP_0_10 > median_SP_mean & median_SP_mean > median_COMP_10_20 ~ "C0_10 > SP > C10_20",
+      abs(median_COMP_0_10 - median_SP_mean) < 1e-8 & median_SP_mean > median_COMP_10_20 ~ "C0_10 = SP > C10_20",
+      median_COMP_10_20 > median_COMP_0_10 & median_COMP_0_10 > median_SP_mean ~ "C10_20 > C0_10 > SP",
+      median_COMP_10_20 > median_SP_mean & median_SP_mean >= median_COMP_0_10 ~ "C10_20 > SP >= C0_10",
+      median_COMP_10_20 > median_COMP_0_10 & abs(median_COMP_0_10 - median_SP_mean) < 1e-8 ~ "C10_20 > C0_10 = SP",
+      TRUE ~ "mixed"
+    )
+  )
+
+final_results_table
+
+```
+
+```{r spatial_all_nutrients_run, message=FALSE, warning=FALSE}
+
+# -----------------------------
+# 1. Spatial setup
+# -----------------------------
+spatial_dat <- lime_wide %>%
+  select(
+    site, sample_site, location_id, lat, long,
+    ends_with("_SP_mean"),
+    ends_with("_COMP_0_10"),
+    ends_with("_COMP_10_20")
+  )
+
+spatial_sf <- st_as_sf(
+  spatial_dat,
+  coords = c("long", "lat"),
+  crs = 4326
+)
+
+# Georgia: UTM 17N
+spatial_sf_utm <- st_transform(spatial_sf, 32617)
+
+# -----------------------------
+# 2. Variables to run
+# -----------------------------
+nutrients_all <- c("ca","k","lb_ceq","lbc_1","mg","mn","p","p_h_2","zn")
+supports_all  <- c("SP_mean","COMP_0_10","COMP_10_20")
+sites <- c("ROME", "Watkinsville", "Midville", "Tifton")
+
+vars_all <- expand.grid(
+  nutrient = nutrients_all,
+  support = supports_all,
+  stringsAsFactors = FALSE
+) %>%
+  mutate(variable = paste0(nutrient, "_", support)) %>%
+  pull(variable)
+
+# -----------------------------
+# 3. Moran's I function
+# -----------------------------
+run_morans_i <- function(data_sf, value_col, site_name, k = 5) {
+  
+  dat_site <- data_sf %>%
+    filter(site == site_name) %>%
+    filter(!is.na(.data[[value_col]]))
+  
+  coords <- st_coordinates(dat_site)
+  
+  nb <- knearneigh(coords, k = k) %>%
+    knn2nb()
+  
+  lw <- nb2listw(nb, style = "W")
+  mt <- moran.test(dat_site[[value_col]], lw)
+  
+  tibble(
+    site = site_name,
+    variable = value_col,
+    n = nrow(dat_site),
+    k = k,
+    moran_I = unname(mt$estimate[1]),
+    expectation = unname(mt$estimate[2]),
+    variance = unname(mt$estimate[3]),
+    p_value = mt$p.value
+  )
+}
+
+# -----------------------------
+# 4. Run Moran's I for all
+# -----------------------------
+morans_results_all <- purrr::map_dfr(
+  vars_all,
+  ~ purrr::map_dfr(sites, \(s) run_morans_i(spatial_sf_utm, .x, s, k = 5))
+) %>%
+  mutate(
+    nutrient = str_remove(variable, "_(SP_mean|COMP_0_10|COMP_10_20)$"),
+    support = str_extract(variable, "(SP_mean|COMP_0_10|COMP_10_20)$"),
+    p_adj_BH = p.adjust(p_value, method = "BH"),
+    sig = case_when(
+      p_adj_BH <= 0.001 ~ "***",
+      p_adj_BH <= 0.01  ~ "**",
+      p_adj_BH <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    ),
+    moran_takeaway = case_when(
+      p_adj_BH <= 0.05 & moran_I > 0 ~ "positive spatial autocorrelation",
+      p_adj_BH <= 0.05 & moran_I < 0 ~ "negative spatial autocorrelation",
+      TRUE ~ "no clear spatial autocorrelation"
+    )
+  ) %>%
+  select(site, nutrient, support, n, k, moran_I, p_value, p_adj_BH, sig, moran_takeaway, variable)
+
+morans_results_all
+
+# -----------------------------
+# 5. Empirical variogram function
+# -----------------------------
+run_variogram <- function(data_sf, value_col, site_name, cutoff = NULL, width = NULL) {
+  
+  dat_site <- data_sf %>%
+    filter(site == site_name) %>%
+    filter(!is.na(.data[[value_col]]))
+  
+  dat_sp <- as(dat_site, "Spatial")
+  coords <- coordinates(dat_sp)
+  
+  if (is.null(cutoff)) {
+    dmax <- max(dist(coords))
+    cutoff <- dmax / 2
+  }
+  
+  if (is.null(width)) {
+    width <- cutoff / 10
+  }
+  
+  form <- as.formula(paste(value_col, "~ 1"))
+  v <- gstat::variogram(form, data = dat_sp, cutoff = cutoff, width = width)
+  
+  as_tibble(v) %>%
+    mutate(
+      site = site_name,
+      variable = value_col
+    )
+}
+
+# -----------------------------
+# 6. Run empirical variograms for all
+# -----------------------------
+empirical_variograms_all <- purrr::map_dfr(
+  vars_all,
+  ~ purrr::map_dfr(sites, \(s) run_variogram(spatial_sf_utm, .x, s))
+) %>%
+  mutate(
+    nutrient = str_remove(variable, "_(SP_mean|COMP_0_10|COMP_10_20)$"),
+    support = str_extract(variable, "(SP_mean|COMP_0_10|COMP_10_20)$")
+  ) %>%
+  select(site, nutrient, support, variable, everything())
+
+empirical_variograms_all
+
+# -----------------------------
+# 7. Simple semivariogram summary table
+#    This is the key table to send me
+# -----------------------------
+variogram_summary_all <- empirical_variograms_all %>%
+  group_by(site, nutrient, support, variable) %>%
+  summarise(
+    n_lags = n(),
+    first_dist = first(dist),
+    last_dist = last(dist),
+    first_gamma = first(gamma),
+    last_gamma = last(gamma),
+    max_gamma = max(gamma, na.rm = TRUE),
+    lag_at_max_gamma = dist[which.max(gamma)],
+    mean_gamma = mean(gamma, na.rm = TRUE),
+    spearman_dist_gamma = suppressWarnings(cor(dist, gamma, method = "spearman", use = "complete.obs")),
+    ratio_last_first = ifelse(first(gamma) == 0, NA_real_, last(gamma) / first(gamma)),
+    semivar_takeaway = case_when(
+      is.na(spearman_dist_gamma) ~ "unclear",
+      spearman_dist_gamma >= 0.5 ~ "clear increasing semivariance",
+      spearman_dist_gamma >= 0.2 ~ "weak-moderate increasing semivariance",
+      spearman_dist_gamma > -0.2 ~ "flat or unclear semivariance pattern",
+      TRUE ~ "decreasing/irregular pattern"
+    ),
+    .groups = "drop"
+  )
+
+variogram_summary_all
+
+# -----------------------------
+# 8. Save the three tables
+# -----------------------------
+write_csv(morans_results_all, "../output_do_not_push/standard_checks/morans_I_results_all.csv")
+write_csv(empirical_variograms_all, "../output_do_not_push/standard_checks/empirical_variograms_all.csv")
+write_csv(variogram_summary_all, "../output_do_not_push/standard_checks/variogram_summary_all.csv")
+#spatial autocorrelation found in P, Ca, but not in Watkinsville. Spatial structure is site specific. 
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+support_labs <- c(
+  SP_mean = "SP mean",
+  COMP_0_10 = "Composite 0–10 cm",
+  COMP_10_20 = "Composite 10–20 cm"
+)
+
+site_labs <- c(
+  "Midville"     = "Midville: Coastal Plain (North)",
+  "Tifton"       = "Tifton: Coastal Plain (South)",
+  "Watkinsville" = "Watkinsville: Piedmont",
+  "ROME"         = "Rome: Ridge and Valley"
+)
+
+plot_vario_site <- function(site_name) {
+  df <- empirical_variograms_all %>%
+    filter(site == site_name) %>%
+    mutate(
+      nutrient = factor(nutrient, levels = names(nutrient_labs)),
+      support = factor(support, levels = c("SP_mean","COMP_0_10","COMP_10_20"))
+    )
+  
+  p <- ggplot(df, aes(x = dist, y = gamma, color = support)) +
+    geom_point(size = 1.5, alpha = 0.8) +
+    geom_line(alpha = 0.8) +
+    facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+    scale_color_manual(
+      values = c(
+        "SP_mean" = "#0072B2",
+        "COMP_0_10" = "#009E73",
+        "COMP_10_20" = "#D55E00"
+      ),
+      labels = support_labs
+    ) +
+    labs(
+      x = "Distance (m)",
+      y = "Semivariance",
+      color = "Support",
+      title = paste("Empirical Semivariograms -", site_labs[[site_name]])
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      strip.text = element_text(face = "bold"),
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom"
+    )
+  
+  print(p)
+  
+  ggsave(
+    paste0("../output_do_not_push/standard_checks/fig_semivariograms_", site_name, ".png"),
+    p, width = 12, height = 8.5, dpi = 300
+  )
+}
+
+purrr::walk(sites, plot_vario_site)
+
+#P is significant for 3/4 sites, but not Watkinsville. Mn strong, pH strong. rest are mixed. 
+#site level- rome is most structured. Tifton is selective. Midville mixed. Watkinsville is least structured.
+
+# ---------------------------------------------------------
+# 1. Spatial setup
+# ---------------------------------------------------------
+spatial_dat <- lime_wide %>%
+  select(
+    site, sample_site, location_id, lat, long,
+    ends_with("_SP_mean"),
+    ends_with("_COMP_0_10"),
+    ends_with("_COMP_10_20")
+  )
+
+spatial_sf <- st_as_sf(
+  spatial_dat,
+  coords = c("long", "lat"),
+  crs = 4326
+)
+
+spatial_sf_utm <- st_transform(spatial_sf, 32617)
+
+# ---------------------------------------------------------
+# 2. Variable list
+# ---------------------------------------------------------
+nutrients_all <- c("ca","k","lb_ceq","lbc_1","mg","mn","p","p_h_2","zn")
+supports_all  <- c("SP_mean","COMP_0_10","COMP_10_20")
+sites <- c("ROME", "Watkinsville", "Midville", "Tifton")
+
+vars_all <- expand.grid(
+  nutrient = nutrients_all,
+  support = supports_all,
+  stringsAsFactors = FALSE
+) %>%
+  mutate(variable = paste0(nutrient, "_", support)) %>%
+  pull(variable)
+
+# ---------------------------------------------------------
+# 3. Function to fit one variogram
+# ---------------------------------------------------------
+fit_one_variogram <- function(data_sf, value_col, site_name, model_types = c("Sph", "Exp", "Gau")) {
+  
+  dat_site <- data_sf %>%
+    filter(site == site_name) %>%
+    filter(!is.na(.data[[value_col]]))
+  
+  dat_sp <- as(dat_site, "Spatial")
+  coords <- coordinates(dat_sp)
+  
+  # empirical variogram
+  dmax <- max(dist(coords))
+  cutoff <- dmax / 2
+  width <- cutoff / 10
+  
+  form <- as.formula(paste(value_col, "~ 1"))
+  v_emp <- gstat::variogram(form, data = dat_sp, cutoff = cutoff, width = width)
+  
+  # basic starting values
+  nug_start  <- min(v_emp$gamma, na.rm = TRUE)
+  sill_start <- max(v_emp$gamma, na.rm = TRUE)
+  psill_start <- max(sill_start - nug_start, 1e-6)
+  range_start <- median(v_emp$dist[v_emp$dist > 0], na.rm = TRUE)
+  
+  # fit candidate models
+  fits <- purrr::map(model_types, function(m) {
+    tryCatch({
+      start_model <- vgm(
+        psill = psill_start,
+        model = m,
+        range = range_start,
+        nugget = nug_start
+      )
+      
+      fit <- fit.variogram(v_emp, start_model)
+      
+      nugget_val <- fit$psill[fit$model == "Nug"]
+      if (length(nugget_val) == 0) nugget_val <- 0
+      
+      struct_rows <- fit$model != "Nug"
+      psill_val <- sum(fit$psill[struct_rows], na.rm = TRUE)
+      range_val <- max(fit$range[struct_rows], na.rm = TRUE)
+      total_sill <- nugget_val + psill_val
+      
+      tibble(
+        site = site_name,
+        variable = value_col,
+        model = m,
+        nugget = nugget_val,
+        psill = psill_val,
+        sill_total = total_sill,
+        range_m = range_val,
+        nugget_sill_ratio = ifelse(total_sill > 0, nugget_val / total_sill, NA_real_),
+        SSErr = attr(fit, "SSErr"),
+        singular = attr(fit, "singular"),
+        converged = !isTRUE(attr(fit, "singular"))
+      )
+    }, error = function(e) {
+      tibble(
+        site = site_name,
+        variable = value_col,
+        model = m,
+        nugget = NA_real_,
+        psill = NA_real_,
+        sill_total = NA_real_,
+        range_m = NA_real_,
+        nugget_sill_ratio = NA_real_,
+        SSErr = NA_real_,
+        singular = NA,
+        converged = FALSE
+      )
+    })
+  })
+  
+  fits_df <- bind_rows(fits)
+  
+  # keep best fit by lowest SSErr
+  best_fit <- fits_df %>%
+    arrange(SSErr) %>%
+    slice(1) %>%
+    mutate(
+      nutrient = str_remove(variable, "_(SP_mean|COMP_0_10|COMP_10_20)$"),
+      support = str_extract(variable, "(SP_mean|COMP_0_10|COMP_10_20)$"),
+      spatial_dependence = case_when(
+        is.na(nugget_sill_ratio) ~ "fit failed",
+        nugget_sill_ratio < 0.25 ~ "strong",
+        nugget_sill_ratio < 0.75 ~ "moderate",
+        TRUE ~ "weak"
+      )
+    ) %>%
+    select(
+      site, nutrient, support, variable, model,
+      nugget, psill, sill_total, range_m,
+      nugget_sill_ratio, spatial_dependence,
+      SSErr, singular, converged
+    )
+  
+  best_fit
+}
+
+# ---------------------------------------------------------
+# 4. Run all fits
+# ---------------------------------------------------------
+variogram_fits_all <- purrr::map_dfr(
+  vars_all,
+  ~ purrr::map_dfr(sites, \(s) fit_one_variogram(spatial_sf_utm, .x, s))
+)
+
+variogram_fits_all
+
+# ---------------------------------------------------------
+# 5. Save
+# ---------------------------------------------------------
+write_csv(
+  variogram_fits_all,
+  "../output_do_not_push/standard_checks/variogram_fits_all.csv"
+)
+#semivariograms
+#Strongest by site: Tifton > Midville > Watkinsville > Rome
+#By nutrient: P = pH > Mn = Zn = LBCeq > LBC > K > Mg > Ca
+#By sampling: SP_mean > COMP_0_10 > COMP_10_20
+
+
+#Exploratory spatial analyses showed that spatial dependence differed by nutrient, support, and site. Across all 108 site × nutrient × support combinations, phosphorus exhibited the strongest spatial autocorrelation by Moran’s I (mean = 0.239, median = 0.286, 9 significant results), followed by manganese (mean = 0.181), zinc (mean = 0.180), and pH (mean = 0.175). Rome was the most spatially structured site overall, with mean Moran’s I = 0.294, median = 0.316, and 25 significant site × support combinations, whereas Midville, Watkinsville, and Tifton had mean Moran’s I values of 0.106, 0.097, and 0.096, respectively. Fitted semivariograms further indicated substantial spatial dependence across the dataset: 102 of 108 models converged, and the fitted variograms had an overall mean nugget:sill ratio = 0.215 (median = 0.170). Phosphorus (mean nugget:sill ratio = 0.158, median fitted range = 201.5 m) and pH (mean nugget:sill ratio = 0.132, median fitted range = 231.9 m) were the most consistently spatial properties in the fitted models. Site-specific fitted metrics also varied, with median nugget:sill ratios of 0.374 in Rome, 0.170 in Watkinsville, 0.078 in Midville, and 0.035 in Tifton. Because the main sampling-support comparisons were conducted as repeated within-location tests, these spatial patterns were interpreted as contextual characteristics of the sampled fields rather than as violations requiring a different primary analytical approach.
+```
+
+```{r grid_spacing_by_site, message=FALSE, warning=FALSE}
+
+# one row per location already in lime_wide
+grid_pts <- lime_wide %>%
+  select(site, sample_site, location_id, lat, long) %>%
+  distinct()
+
+# convert to sf and project to UTM 17N for distance in meters
+grid_sf <- st_as_sf(grid_pts, coords = c("long", "lat"), crs = 4326) %>%
+  st_transform(32617)
+
+coords <- st_coordinates(grid_sf)
+
+grid_sf$x <- coords[,1]
+grid_sf$y <- coords[,2]
+
+# nearest-neighbor spacing by site
+grid_spacing_summary <- grid_sf %>%
+  st_drop_geometry() %>%
+  group_by(site) %>%
+  group_modify(~{
+    xy <- as.matrix(.x[, c("x", "y")])
+    
+    # k = 2 because first neighbor is the point itself
+    nn <- FNN::get.knn(xy, k = 2)
+    nn1 <- nn$nn.dist[, 1]
+    nn2 <- nn$nn.dist[, 2]
+    
+    tibble(
+      n_locations = nrow(.x),
+      nn1_mean_m = mean(nn1),
+      nn1_median_m = median(nn1),
+      nn1_min_m = min(nn1),
+      nn1_max_m = max(nn1),
+      nn2_mean_m = mean(nn2),
+      nn2_median_m = median(nn2)
+    )
+  }) %>%
+  ungroup()
+
+grid_spacing_summary
+library(FNN)
+
+site_labs <- c(
+  "Midville"     = "Midville: Coastal Plain (North)",
+  "Tifton"       = "Tifton: Coastal Plain (South)",
+  "Watkinsville" = "Watkinsville: Piedmont",
+  "ROME"         = "Rome: Ridge and Valley"
+)
+
+grid_pts <- lime_wide %>%
+  select(site, sample_site, location_id, lat, long) %>%
+  distinct()
+
+grid_sf <- st_as_sf(grid_pts, coords = c("long", "lat"), crs = 4326) %>%
+  st_transform(32617)
+
+coords <- st_coordinates(grid_sf)
+grid_sf$x <- coords[,1]
+grid_sf$y <- coords[,2]
+
+nn_plot_df <- grid_sf %>%
+  st_drop_geometry() %>%
+  group_by(site) %>%
+  group_modify(~{
+    xy <- as.matrix(.x[, c("x", "y")])
+    nn <- FNN::get.knn(xy, k = 2)
+    tibble(nn1_m = nn$nn.dist[,1])
+  }) %>%
+  ungroup() %>%
+  mutate(site = factor(site, levels = c("ROME", "Watkinsville", "Midville", "Tifton")))
+
+p_spacing <- ggplot(nn_plot_df, aes(x = site, y = nn1_m, fill = site)) +
+  geom_boxplot(width = 0.72, outlier.alpha = 0.35, linewidth = 0.5) +
+  scale_x_discrete(labels = site_labs) +
+  scale_fill_manual(values = c(
+    "Midville" = "#0072B2",
+    "Tifton" = "#009E73",
+    "Watkinsville" = "#CC79A7",
+    "ROME" = "#D55E00"
+  )) +
+  labs(
+    x = NULL,
+    y = "Nearest-neighbor distance (m)",
+    title = "Approximate Grid Spacing by Site",
+    subtitle = "Based on nearest-neighbor distances among sampling locations"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+
+p_spacing
+#Because nearest-neighbor grid spacing was broadly similar among sites (median spacing approximately 57–62 m), differences in observed spatial structure are unlikely to be driven solely by sampling interval and more likely reflect site-specific soil and landscape variation.7
+```
+
+
+```{r fig_main_boxplots_letters, message=FALSE, warning=FALSE}
+
+
+# nicer nutrient labels
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+support_labs <- c(
+  SP_mean    = "Single Point Mean 0–10 cm",
+  COMP_0_10  = "Composite 0–10 cm",
+  COMP_10_20 = "Composite 10–20 cm"
+)
+
+# Okabe-Ito colorblind-friendly palette
+support_cols <- c(
+  SP_mean    = "#0072B2",
+  COMP_0_10  = "#009E73",
+  COMP_10_20 = "#D55E00"
+)
+
+make_letters <- function(df) {
+  comps <- df %>%
+    transmute(
+      comparison = paste(group1, group2, sep = "-"),
+      p.adj = p.adj
+    )
+  
+  pvec <- comps$p.adj
+  names(pvec) <- comps$comparison
+  
+  letters <- multcompView::multcompLetters(pvec, threshold = 0.05)$Letters
+  
+  tibble(
+    sample_support = names(letters),
+    letters = letters
+  )
+}
+
+letters_df <- pairwise_all %>%
+  group_by(nutrient) %>%
+  group_modify(~ make_letters(.x)) %>%
+  ungroup()
+
+letter_pos <- repeated_long %>%
+  group_by(nutrient, sample_support) %>%
+  summarise(
+    y_pos = max(value, na.rm = TRUE) * 1.08,
+    .groups = "drop"
+  )
+
+letters_plot_df <- letters_df %>%
+  left_join(letter_pos, by = c("nutrient", "sample_support")) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    sample_support = factor(sample_support, levels = c("SP_mean", "COMP_0_10", "COMP_10_20"))
+  )
+
+plot_df <- repeated_long %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    sample_support = factor(sample_support, levels = c("SP_mean", "COMP_0_10", "COMP_10_20"))
+  )
+
+p_main <- ggplot(plot_df, aes(x = sample_support, y = value, fill = sample_support)) +
+  geom_boxplot(
+    width = 0.72,
+    outlier.alpha = 0.35,
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = letters_plot_df,
+    aes(x = sample_support, y = y_pos, label = letters),
+    inherit.aes = FALSE,
+    size = 5,
+    fontface = "bold"
+  ) +
+  facet_wrap(
+    ~ nutrient,
+    scales = "free_y",
+    labeller = as_labeller(nutrient_labs)
+  ) +
+  scale_fill_manual(values = support_cols) +
+  scale_x_discrete(labels = support_labs) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Soil-Property Distributions by Sampling Support Across All Bermuda Hay Grassland Sites",
+    subtitle = "Different letters indicate significant pairwise differences within each nutrient (paired Wilcoxon, BH-adjusted)"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 30, l = 20)
+  )
+
+p_main
+
+ggsave(
+  "../output_do_not_push/fig_main_boxplots_letters.png",
+  p_main,
+  width = 12.5,
+  height = 8.75,
+  dpi = 300
+)
+
+```
+
+```{r fig_absdiff_by_site_letters, message=FALSE, warning=FALSE}
+
+
+# nutrient labels
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+site_labs <- c(
+  "Midville"     = "Midville: Coastal Plain (North)",
+  "Tifton"       = "Tifton: Coastal Plain (South)",
+  "Watkinsville" = "Watkinsville: Piedmont",
+  "ROME"         = "Rome: Ridge and Valley"
+)
+
+site_order <- c("ROME", "Watkinsville", "Midville", "Tifton")
+
+ab_plot_df_site <- ab_variability %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    site = factor(site, levels = site_order)
+  )
+
+# Kruskal-Wallis by nutrient
+kw_absdiff <- ab_plot_df_site %>%
+  group_by(nutrient) %>%
+  kruskal_test(abs_diff ~ site) %>%
+  ungroup() %>%
+  mutate(p_adj_BH = p.adjust(p, method = "BH"))
+
+# Dunn post hoc by nutrient
+dunn_absdiff <- ab_plot_df_site %>%
+  group_by(nutrient) %>%
+  dunn_test(abs_diff ~ site, p.adjust.method = "BH") %>%
+  ungroup()
+
+# compact letters
+make_site_letters <- function(df) {
+  comps <- df %>%
+    transmute(
+      comparison = paste(group1, group2, sep = "-"),
+      p.adj = p.adj
+    )
+  
+  pvec <- comps$p.adj
+  names(pvec) <- comps$comparison
+  
+  letters <- multcompView::multcompLetters(pvec, threshold = 0.05)$Letters
+  
+  tibble(
+    site = names(letters),
+    letters = letters
+  )
+}
+
+letters_site_df <- dunn_absdiff %>%
+  group_by(nutrient) %>%
+  group_modify(~ make_site_letters(.x)) %>%
+  ungroup() %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    site = factor(site, levels = site_order)
+  )
+
+letter_pos_site <- ab_plot_df_site %>%
+  group_by(nutrient, site) %>%
+  summarise(
+    y_pos = max(abs_diff, na.rm = TRUE) + 0.08 * diff(range(abs_diff, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+letters_plot_site <- letters_site_df %>%
+  left_join(letter_pos_site, by = c("nutrient", "site"))
+
+p_ab_site <- ggplot(ab_plot_df_site, aes(x = site, y = abs_diff, fill = site)) +
+  geom_boxplot(
+    width = 0.72,
+    outlier.alpha = 0.35,
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = letters_plot_site,
+    aes(x = site, y = y_pos, label = letters),
+    inherit.aes = FALSE,
+    size = 4.4,
+    fontface = "bold"
+  ) +
+  facet_wrap(
+    ~ nutrient,
+    scales = "free_y",
+    labeller = as_labeller(nutrient_labs)
+  ) +
+  scale_x_discrete(labels = site_labs) +
+  scale_fill_manual(
+    values = c(
+      "Midville" = "#0072B2",
+      "Tifton" = "#009E73",
+      "Watkinsville" = "#CC79A7",
+      "ROME" = "#D55E00"
+    ),
+    labels = site_labs
+  ) +
+  labs(
+    x = NULL,
+    y = "|SP A - SP B|",
+    title = "Local-Scale Variability Between Single-Point Samples 10 m Apart",
+    subtitle = "Different letters indicate significant site differences in |SP A - SP B| within each nutrient"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 25, hjust = 1, vjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 30, l = 20)
+  )
+
+p_ab_site
+
+ggsave(
+  "../output_do_not_push/fig_SPAB_absdiff_by_site_letters.png",
+  p_ab_site,
+  width = 12.5,
+  height = 8.75,
+  dpi = 300
+)
+```
+
+
+```{r fig_spa_spb_cleaner, message=FALSE, warning=FALSE}
+
+
+# nutrient labels
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+# site labels
+site_labs <- c(
+  "Midville"     = "Midville\nCoastal Plain (North)",
+  "Tifton"       = "Tifton\nCoastal Plain (South)",
+  "Watkinsville" = "Watkinsville\nPiedmont",
+  "ROME"         = "Rome\nRidge and Valley"
+)
+
+site_order <- c("ROME", "Watkinsville", "Midville", "Tifton")
+
+sp_labs <- c(
+  "SP_A" = "A",
+  "SP_B" = "B"
+)
+
+sp_cols <- c(
+  "SP_A" = "#0072B2",
+  "SP_B" = "#D55E00"
+)
+
+# long table for SP A vs SP B
+ab_long_for_plot <- lime_tagged %>%
+  filter(sample_type %in% c("SP_A", "SP_B")) %>%
+  pivot_longer(cols = all_of(nutrients_all), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    site = factor(site, levels = site_order),
+    sample_type = factor(sample_type, levels = c("SP_A", "SP_B"))
+  )
+
+# significance labels from existing paired Wilcoxon by site
+sig_sp_by_site <- ab_wilcox_by_site %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    site = factor(site, levels = site_order),
+    sig = case_when(
+      p.adj <= 0.001 ~ "***",
+      p.adj <= 0.01  ~ "**",
+      p.adj <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+# y-position for significance labels within each nutrient x site
+sig_pos_sp <- ab_long_for_plot %>%
+  group_by(nutrient, site) %>%
+  summarise(
+    y_pos = max(value, na.rm = TRUE) + 0.08 * diff(range(value, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+sig_plot_sp <- sig_sp_by_site %>%
+  left_join(sig_pos_sp, by = c("nutrient", "site"))
+
+p_spab_clean <- ggplot(ab_long_for_plot, aes(x = site, y = value, fill = sample_type)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.78),
+    width = 0.68,
+    outlier.alpha = 0.35,
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = sig_plot_sp,
+    aes(x = site, y = y_pos, label = sig),
+    inherit.aes = FALSE,
+    size = 4.4,
+    fontface = "bold"
+  ) +
+  facet_wrap(
+    ~ nutrient,
+    scales = "free_y",
+    labeller = as_labeller(nutrient_labs)
+  ) +
+  scale_x_discrete(labels = site_labs) +
+  scale_fill_manual(
+    values = sp_cols,
+    labels = sp_labs
+  ) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    fill = "Single-point sample",
+    title = "Differences Between Single-Point Samples Collected 10 m Apart",
+    subtitle = "Within each site, SP A and SP B are compared using paired Wilcoxon tests"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 20, l = 20)
+  )
+
+p_spab_clean
+
+ggsave(
+  "../output_do_not_push/fig_SPAB_cleaner_by_site.png",
+  p_spab_clean,
+  width = 20,
+  height = 12,
+  dpi = 300
+)
+
+```
+
+```{r support_variability_summary, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+support_variability <- repeated_long %>%
+  group_by(site, nutrient, sample_support) %>%
+  summarise(
+    n = n(),
+    mean = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    cv_pct = ifelse(mean > 0, 100 * sd / mean, NA_real_),
+    .groups = "drop"
+  )
+
+support_variability
+
+write_csv(
+  support_variability,
+  "../output_do_not_push/support_variability_summary.csv"
+)
+
+
+
+```
+
+```{r support_variability_figure, message=FALSE, warning=FALSE}
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+support_labs <- c(
+  SP_mean    = "SP Mean 0–10 cm",
+  COMP_0_10  = "Composite 0–10 cm",
+  COMP_10_20 = "Composite 10–20 cm"
+)
+
+support_cols <- c(
+  SP_mean    = "#0072B2",
+  COMP_0_10  = "#009E73",
+  COMP_10_20 = "#D55E00"
+)
+
+p_cv <- support_variability %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    sample_support = factor(sample_support, levels = c("SP_mean","COMP_0_10","COMP_10_20"))
+  ) %>%
+  ggplot(aes(x = sample_support, y = cv_pct, fill = sample_support)) +
+  geom_col() +
+  facet_grid(nutrient ~ site, scales = "free_y", labeller = labeller(nutrient = as_labeller(nutrient_labs))) +
+  scale_x_discrete(labels = support_labs) +
+  scale_fill_manual(values = support_cols) +
+  labs(
+    x = NULL,
+    y = "Coefficient of variation (%)",
+    title = "Support-level variability by nutrient and site"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_cv
+
+ggsave(
+  "../output_do_not_push/fig_support_variability_cv.png",
+  p_cv,
+  width = 13,
+  height = 10,
+  dpi = 300
+)
+#to show how support changes spread.
+```
+
+
+
+```{r effect_size_data, message=FALSE, warning=FALSE}
+
+# build location-level percent differences
+effect_size_long <- purrr::map_dfr(nutrients_all, function(nut) {
+  sp <- lime_wide[[paste0(nut, "_SP_mean")]]
+  c01 <- lime_wide[[paste0(nut, "_COMP_0_10")]]
+  c1020 <- lime_wide[[paste0(nut, "_COMP_10_20")]]
+  
+  tibble(
+    site = lime_wide$site,
+    sample_site = lime_wide$sample_site,
+    location_id = lime_wide$location_id,
+    nutrient = nut,
+    pct_diff_C0_10_vs_SP = 100 * (c01 - sp) / sp,
+    pct_diff_C10_20_vs_SP = 100 * (c1020 - sp) / sp
+  )
+}) %>%
+  pivot_longer(
+    cols = c(pct_diff_C0_10_vs_SP, pct_diff_C10_20_vs_SP),
+    names_to = "contrast",
+    values_to = "pct_diff"
+  ) %>%
+  mutate(
+    contrast = case_when(
+      contrast == "pct_diff_C0_10_vs_SP"  ~ "Composite 0–10 vs SP Mean",
+      contrast == "pct_diff_C10_20_vs_SP" ~ "Composite 10–20 vs SP Mean",
+      TRUE ~ contrast
+    )
+  )
+
+effect_size_summary <- effect_size_long %>%
+  group_by(site, nutrient, contrast) %>%
+  summarise(
+    n = n(),
+    median_pct_diff = median(pct_diff, na.rm = TRUE),
+    mean_pct_diff = mean(pct_diff, na.rm = TRUE),
+    IQR_pct_diff = IQR(pct_diff, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+effect_size_summary
+
+write_csv(
+  effect_size_summary,
+  "../output_do_not_push/effect_size_summary.csv"
+)
+```
+
+
+```{r effect_size_figure, message=FALSE, warning=FALSE}
+
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+contrast_cols <- c(
+  "Composite 0–10 vs SP Mean" = "#009E73",
+  "Composite 10–20 vs SP Mean" = "#D55E00"
+)
+
+# pooled effect-size summary
+effect_size_pooled <- effect_size_long %>%
+  group_by(nutrient, contrast) %>%
+  summarise(
+    n = n(),
+    median_pct_diff = median(pct_diff, na.rm = TRUE),
+    q1 = quantile(pct_diff, 0.25, na.rm = TRUE),
+    q3 = quantile(pct_diff, 0.75, na.rm = TRUE),
+    IQR_pct_diff = IQR(pct_diff, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    contrast = factor(
+      contrast,
+      levels = c("Composite 0–10 vs SP Mean", "Composite 10–20 vs SP Mean")
+    )
+  )
+
+# force each facet to be symmetric around zero
+facet_limits <- effect_size_pooled %>%
+  group_by(nutrient) %>%
+  summarise(
+    lim = max(abs(c(q1, q3, median_pct_diff)), na.rm = TRUE) * 1.15,
+    .groups = "drop"
+  )
+
+blank_df <- facet_limits %>%
+  tidyr::expand_grid(
+    contrast = factor(
+      c("Composite 0–10 vs SP Mean", "Composite 10–20 vs SP Mean"),
+      levels = c("Composite 0–10 vs SP Mean", "Composite 10–20 vs SP Mean")
+    )
+  ) %>%
+  mutate(
+    y_upper = lim,
+    y_lower = -lim
+  )
+
+p_effect_pooled <- ggplot(
+  effect_size_pooled,
+  aes(x = contrast, y = median_pct_diff, fill = contrast)
+) +
+  geom_blank(
+    data = blank_df,
+    aes(x = contrast, y = y_upper),
+    inherit.aes = FALSE
+  ) +
+  geom_blank(
+    data = blank_df,
+    aes(x = contrast, y = y_lower),
+    inherit.aes = FALSE
+  ) +
+  geom_col(width = 0.72) +
+  geom_errorbar(
+    aes(ymin = q1, ymax = q3),
+    width = 0.18,
+    linewidth = 0.6
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(
+    ~ nutrient,
+    scales = "free_y",
+    labeller = as_labeller(nutrient_labs)
+  ) +
+  scale_fill_manual(values = contrast_cols) +
+  labs(
+    x = NULL,
+    y = "Median % difference from single-point mean\n(error bars = IQR)",
+    fill = "Sampling Comparison",
+    title = "Magnitude and direction of composite sampling effects relative to single-point mean"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_effect_pooled
+
+ggsave(
+  "../output_do_not_push/fig_effect_size_percent_diff_pooled.png",
+  p_effect_pooled,
+  width = 10.5,
+  height = 7.5,
+  dpi = 300
+)
+#P and Zn are highly sensitive to the deeper composite support
+
+#Composite 0–10 cm is usually slightly to moderately higher than SP mean
+
+# Composite 10–20 cm is usually lower than SP mean
+# #pH behaves differently from the extractable nutrients, where Composite 10–20 cm is often higher than SP mean
+
+#recommendations:
+# If the goal is to represent near-surface fertility status for routine agronomic interpretation in these grassland systems, Composite 0–10 cm is recommended. In the data, it generally preserved the same directional story as SP while giving slightly higher near-surface values for most nutrients, and it avoids the very large downward shifts seen with the 10–20 cm composite for P and Zn. However, for pH and K, either SP or COMP is interchangeable, as there were overall general non-significant differences in sampling of the upper 10cm. This was reflected across most sites. 
+#If the goal is to capture local, fine-scale heterogeneity, SP is more informative. The A–B results show that single points 10 m apart can differ meaningfully; SP is better at revealing patchiness rather than smoothing it away.
+```
+
+
+
+
+```{r site_scaled_heatmap, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lbc_1  = "Lime Buffer Capacity",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+site_labs <- c(
+  "ROME" = "Rome",
+  "Watkinsville" = "Watkinsville",
+  "Midville" = "Midville",
+  "Tifton" = "Tifton"
+)
+
+heat_df <- effect_size_summary %>%
+  group_by(nutrient, contrast) %>%
+  mutate(
+    scaled_effect = if (sd(median_pct_diff, na.rm = TRUE) == 0) {
+      0
+    } else {
+      as.numeric(scale(median_pct_diff))
+    }
+  ) %>%
+  ungroup() %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    site = factor(site, levels = c("ROME", "Watkinsville", "Midville", "Tifton")),
+    label = paste0(round(scaled_effect, 2), "\n(", round(median_pct_diff, 1), "%)")
+  )
+
+p_heat_site_scaled <- ggplot(heat_df, aes(x = site, y = nutrient, fill = scaled_effect)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = label), size = 3.0, lineheight = 0.95) +
+  facet_wrap(~ contrast) +
+  scale_x_discrete(labels = site_labs) +
+  scale_y_discrete(labels = nutrient_labs) +
+  scale_fill_gradient2(
+    low = "#D55E00",
+    mid = "white",
+    high = "#009E73",
+    midpoint = 0,
+    limits = c(-1.5, 1.5),
+    oob = scales::squish,
+    name = "Scaled effect\nwithin nutrient"
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Site-level support effects relative to SP mean",
+    subtitle = "Tile color and top number are scaled within each nutrient and contrast; raw median % difference is shown in parentheses"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank()
+  )
+
+p_heat_site_scaled
+
+ggsave(
+  "../output_do_not_push/fig_site_scaled_heatmap.png",
+  p_heat_site_scaled,
+  width = 11,
+  height = 7.5,
+  dpi = 300
+)
+```
+
+```{r}
+
+```
+
