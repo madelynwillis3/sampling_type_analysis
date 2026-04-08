@@ -6,6 +6,11 @@ format: html
 
 ```{r load libraries}
 library(tidyverse)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(rstatix)
+library(patchwork)
 library(rstatix)
 library(multcompView)
 library(tidyverse)
@@ -652,6 +657,28 @@ write_csv(lime_wide, "../output_do_not_push/standard_checks/lime_wide_location_l
 write_csv(repeated_long, "../output_do_not_push/standard_checks/repeated_long_for_tests.csv")
 
 ```
+```{r, eval = FALSE, message=FALSE, warning=FALSE}
+#saving to export to arcgis pro
+sp_a_sf <- lime_clean %>%
+  filter(type == "A") %>%
+  select(site, sample_site, location_id, lat, long) %>%
+  distinct() %>%
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+st_write(
+  sp_a_sf,
+  "../output_do_not_push/sp_a_points_all_sites.shp",
+  delete_layer = TRUE
+)
+
+st_write(
+  sp_a_sf,
+  "../output_do_not_push/sp_a_points_all_sites.gpkg",
+  delete_layer = TRUE
+)
+
+```
+
 ```{r formal_repeated_tests, message=FALSE, warning=FALSE}
 
 
@@ -2118,7 +2145,610 @@ ggsave(
 )
 ```
 
+```{r PERRY}
+# ---------------------------------------------------------
+# 1. Read data
+#    YOU fill in the file paths
+# ---------------------------------------------------------
+ap_trunc <- read_csv("../data_do_not_push/hz_0_15_wide_03_30_2026.csv", show_col_types = FALSE)
+ap_full  <- read_csv("../data_do_not_push/perry_Ap_data_full_02_10_2026.csv", show_col_types = FALSE)
+fixed_15 <- read_csv("../data_do_not_push/perry_soil_points_surface_03_2026.csv", show_col_types = FALSE)
+
+# ---------------------------------------------------------
+# 2. Keep only fertility variables
+#    No C or N
+# ---------------------------------------------------------
+soil_vars <- c("lbc_1", "lb_ceq", "p_h_2", "ca", "k", "mg", "mn", "p", "zn")
+
+# ---------------------------------------------------------
+# 3. Standardize names
+#    Adjust these renames if your columns differ slightly
+# ---------------------------------------------------------
+
+ap_trunc2 <- ap_trunc %>%
+  transmute(
+    point = Point,
+    ca = Ca_0_15,
+    k = K_0_15,
+    mg = Mg_0_15,
+    mn = Mn_0_15,
+    p = P_0_15,
+    zn = Zn_0_15,
+    p_h_2 = `pH.2_0_15`,
+    lbc_1 = `LBC.1_0_15`,
+    lb_ceq = LBCeq_0_15,
+    POINT_X,
+    POINT_Y
+  ) %>%
+  distinct()
+
+# ---------------------------------------------------------
+# 3. Standardize full Ap
+# multiple rows per point, so collapse to one row per point
+# I recommend thickness-weighted mean using H.Depth.cm.
+# ---------------------------------------------------------
+ap_full2 <- ap_full %>%
+  transmute(
+    point = Point,
+    hz_thickness = `H.Depth.cm.`,
+    ca = Ca,
+    k = K,
+    mg = Mg,
+    mn = Mn,
+    p = P,
+    zn = Zn,
+    p_h_2 = `pH.2`,
+    lbc_1 = `LBC.1`,
+    lb_ceq = LBCeq,
+    POINT_X,
+    POINT_Y
+  ) %>%
+  filter(!is.na(point), !is.na(hz_thickness), hz_thickness > 0)
+
+# thickness-weighted one row per point
+ap_full_point <- ap_full2 %>%
+  group_by(point) %>%
+  summarise(
+    ca = weighted.mean(ca, hz_thickness, na.rm = TRUE),
+    k = weighted.mean(k, hz_thickness, na.rm = TRUE),
+    mg = weighted.mean(mg, hz_thickness, na.rm = TRUE),
+    mn = weighted.mean(mn, hz_thickness, na.rm = TRUE),
+    p = weighted.mean(p, hz_thickness, na.rm = TRUE),
+    zn = weighted.mean(zn, hz_thickness, na.rm = TRUE),
+    p_h_2 = weighted.mean(p_h_2, hz_thickness, na.rm = TRUE),
+    lbc_1 = weighted.mean(lbc_1, hz_thickness, na.rm = TRUE),
+    lb_ceq = weighted.mean(lb_ceq, hz_thickness, na.rm = TRUE),
+    POINT_X = first(POINT_X),
+    POINT_Y = first(POINT_Y),
+    .groups = "drop"
+  )
+
+# ---------------------------------------------------------
+# 4. Standardize fixed depth
+# choose CID as main fertility comparison
+# ---------------------------------------------------------
+fixed_152 <- fixed_15 %>%
+  filter(type == "CID") %>%
+  transmute(
+    point = PointLabel,
+    ca = Ca,
+    k = K,
+    mg = Mg,
+    mn = Mn,
+    p = P,
+    zn = Zn,
+    p_h_2 = `pH.2`,
+    lbc_1 = `LBC.1`,
+    lb_ceq = LBCeq,
+    x,
+    y
+  ) %>%
+  distinct()
+
+# quick checks
+names(ap_trunc2)
+names(ap_full_point)
+names(fixed_152)
+
+# ---------------------------------------------------------
+# 5. Summary stats for each dataset
+# ---------------------------------------------------------
+summarize_dataset <- function(df, dataset_name) {
+  df %>%
+    pivot_longer(cols = all_of(soil_vars), names_to = "nutrient", values_to = "value") %>%
+    group_by(nutrient) %>%
+    summarise(
+      dataset = dataset_name,
+      n = sum(!is.na(value)),
+      mean = mean(value, na.rm = TRUE),
+      median = median(value, na.rm = TRUE),
+      sd = sd(value, na.rm = TRUE),
+      IQR = IQR(value, na.rm = TRUE),
+      cv_pct = ifelse(mean > 0, 100 * sd / mean, NA_real_),
+      .groups = "drop"
+    )
+}
+
+summary_fixed <- summarize_dataset(fixed_152, "Fixed_0_15_CID")
+summary_ap_trunc <- summarize_dataset(ap_trunc2, "Ap_truncated_0_15")
+summary_ap_full <- summarize_dataset(ap_full_point, "Ap_full")
+
+summary_all <- bind_rows(summary_fixed, summary_ap_trunc, summary_ap_full)
+summary_all
+
+# ---------------------------------------------------------
+# 6. PAIRED comparison: truncated Ap vs full Ap
+# same points
+# ---------------------------------------------------------
+ap_paired <- ap_trunc2 %>%
+  inner_join(ap_full_point, by = "point", suffix = c("_trunc", "_full"))
+
+paired_tests <- purrr::map_dfr(soil_vars, function(v) {
+  x <- ap_paired[[paste0(v, "_trunc")]]
+  y <- ap_paired[[paste0(v, "_full")]]
+  
+  tmp <- tibble(x = x, y = y) %>% drop_na()
+  
+  wt <- wilcox.test(tmp$x, tmp$y, paired = TRUE, exact = FALSE)
+  ct <- suppressWarnings(cor.test(tmp$x, tmp$y, method = "spearman", exact = FALSE))
+  
+  tibble(
+    nutrient = v,
+    n = nrow(tmp),
+    median_trunc = median(tmp$x, na.rm = TRUE),
+    median_full = median(tmp$y, na.rm = TRUE),
+    median_diff = median(tmp$y - tmp$x, na.rm = TRUE),
+    median_pct_diff = median(ifelse(tmp$x == 0, NA, 100 * (tmp$y - tmp$x) / tmp$x), na.rm = TRUE),
+    wilcox_p = wt$p.value,
+    spearman_rho = unname(ct$estimate),
+    spearman_p = ct$p.value
+  )
+}) %>%
+  mutate(
+    wilcox_p_adj_BH = p.adjust(wilcox_p, method = "BH"),
+    spearman_p_adj_BH = p.adjust(spearman_p, method = "BH")
+  )
+paired_tests
+
+# ---------------------------------------------------------
+# 7. UNPAIRED comparison: fixed depth vs truncated Ap
+# ---------------------------------------------------------
+fixed_vs_trunc <- purrr::map_dfr(soil_vars, function(v) {
+  x <- fixed_152[[v]]
+  y <- ap_trunc2[[v]]
+  
+  tmp <- tibble(
+    group = c(rep("Fixed_0_15_CID", length(x)), rep("Ap_truncated_0_15", length(y))),
+    value = c(x, y)
+  ) %>% drop_na()
+  
+  wt <- wilcox.test(value ~ group, data = tmp, exact = FALSE)
+  
+  tibble(
+    nutrient = v,
+    n_fixed = sum(!is.na(x)),
+    n_ap_trunc = sum(!is.na(y)),
+    median_fixed = median(x, na.rm = TRUE),
+    median_ap_trunc = median(y, na.rm = TRUE),
+    median_diff = median(y, na.rm = TRUE) - median(x, na.rm = TRUE),
+    median_pct_diff = 100 * (median(y, na.rm = TRUE) - median(x, na.rm = TRUE)) / median(x, na.rm = TRUE),
+    wilcox_p = wt$p.value
+  )
+}) %>%
+  mutate(wilcox_p_adj_BH = p.adjust(wilcox_p, method = "BH"))
+fixed_vs_trunc
+
+# ---------------------------------------------------------
+# 8. UNPAIRED comparison: fixed depth vs full Ap
+# ---------------------------------------------------------
+fixed_vs_full <- purrr::map_dfr(soil_vars, function(v) {
+  x <- fixed_152[[v]]
+  y <- ap_full_point[[v]]
+  
+  tmp <- tibble(
+    group = c(rep("Fixed_0_15_CID", length(x)), rep("Ap_full", length(y))),
+    value = c(x, y)
+  ) %>% drop_na()
+  
+  wt <- wilcox.test(value ~ group, data = tmp, exact = FALSE)
+  
+  tibble(
+    nutrient = v,
+    n_fixed = sum(!is.na(x)),
+    n_ap_full = sum(!is.na(y)),
+    median_fixed = median(x, na.rm = TRUE),
+    median_ap_full = median(y, na.rm = TRUE),
+    median_diff = median(y, na.rm = TRUE) - median(x, na.rm = TRUE),
+    median_pct_diff = 100 * (median(y, na.rm = TRUE) - median(x, na.rm = TRUE)) / median(x, na.rm = TRUE),
+    wilcox_p = wt$p.value
+  )
+}) %>%
+  mutate(wilcox_p_adj_BH = p.adjust(wilcox_p, method = "BH"))
+fixed_vs_full
+
+# ---------------------------------------------------------
+# 9. Variability comparison table
+# ---------------------------------------------------------
+variability_compare <- summary_all %>%
+  select(dataset, nutrient, n, median, IQR, sd, cv_pct) %>%
+  arrange(nutrient, dataset)
+
+variability_compare
+
+# ---------------------------------------------------------
+# 10. Figures
+# ---------------------------------------------------------
+nutrient_labs <- c(
+  ca = "Calcium (Ca)",
+  k = "Potassium (K)",
+  lb_ceq = "LBCeq",
+  lbc_1 = "LBC",
+  mg = "Magnesium (Mg)",
+  mn = "Manganese (Mn)",
+  p = "Phosphorus (P)",
+  p_h_2 = "pH",
+  zn = "Zinc (Zn)"
+)
+fixed_152 <- fixed_152 %>%
+  mutate(point = as.character(point))
+
+ap_trunc2 <- ap_trunc2 %>%
+  mutate(point = as.character(point))
+
+ap_full_point <- ap_full_point %>%
+  mutate(point = as.character(point))
+plot_long <- bind_rows(
+  fixed_152 %>% mutate(dataset = "Fixed_0_15_CID"),
+  ap_trunc2 %>% mutate(dataset = "Ap_truncated_0_15"),
+  ap_full_point %>% mutate(dataset = "Ap_full")
+) %>%
+  pivot_longer(cols = all_of(soil_vars), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    dataset = factor(dataset, levels = c("Fixed_0_15_CID", "Ap_truncated_0_15", "Ap_full"))
+  )
+
+p_box <- ggplot(plot_long, aes(x = dataset, y = value, fill = dataset)) +
+  geom_boxplot(outlier.alpha = 0.35, width = 0.72) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Fixed-depth and Ap-based soil fertility comparisons"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold")
+  )
+
+p_box
+
+paired_scatter <- purrr::map_dfr(soil_vars, function(v) {
+  tibble(
+    nutrient = v,
+    trunc = ap_paired[[paste0(v, "_trunc")]],
+    full = ap_paired[[paste0(v, "_full")]]
+  )
+}) %>%
+  mutate(nutrient = factor(nutrient, levels = names(nutrient_labs)))
+
+p_scatter <- ggplot(paired_scatter, aes(x = trunc, y = full)) +
+  geom_point(alpha = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  facet_wrap(~ nutrient, scales = "free", labeller = as_labeller(nutrient_labs)) +
+  labs(
+    x = "Truncated Ap (0-15 cm)",
+    y = "Full Ap",
+    title = "Agreement between truncated and full Ap-based fertility values"
+  ) +
+  theme_minimal(base_size = 12)
+
+p_scatter
+
+# ---------------------------------------------------------
+# 11. Save outputs
+# ---------------------------------------------------------
+write_csv(summary_all, "../output_do_not_push/ap_vs_depth_summary_all.csv")
+write_csv(paired_tests, "../output_do_not_push/ap_vs_depth_paired_trunc_vs_full.csv")
+write_csv(fixed_vs_trunc, "../output_do_not_push/ap_vs_depth_fixed_vs_trunc.csv")
+write_csv(fixed_vs_full, "../output_do_not_push/ap_vs_depth_fixed_vs_full.csv")
+write_csv(variability_compare, "../output_do_not_push/ap_vs_depth_variability_compare.csv")
+```
+
 ```{r}
 
+# ---------------------------------------------------------
+# 1. Build pairwise p-value table across the three datasets
+# ---------------------------------------------------------
+pairwise_ap <- bind_rows(
+  fixed_vs_trunc %>%
+    transmute(
+      nutrient,
+      group1 = "Fixed_0_15_CID",
+      group2 = "Ap_truncated_0_15",
+      p_adj = wilcox_p_adj_BH
+    ),
+  fixed_vs_full %>%
+    transmute(
+      nutrient,
+      group1 = "Fixed_0_15_CID",
+      group2 = "Ap_full",
+      p_adj = wilcox_p_adj_BH
+    ),
+  paired_tests %>%
+    transmute(
+      nutrient,
+      group1 = "Ap_truncated_0_15",
+      group2 = "Ap_full",
+      p_adj = wilcox_p_adj_BH
+    )
+)
+
+pairwise_ap
+
+# ---------------------------------------------------------
+# 2. Convert pairwise p-values into compact letters
+# ---------------------------------------------------------
+make_letters_ap <- function(df) {
+  comps <- df %>%
+    transmute(
+      comparison = paste(group1, group2, sep = "-"),
+      p_adj = p_adj
+    )
+  
+  pvec <- comps$p_adj
+  names(pvec) <- comps$comparison
+  
+  letters <- multcompView::multcompLetters(pvec, threshold = 0.05)$Letters
+  
+  tibble(
+    dataset = names(letters),
+    letters = letters
+  )
+}
+
+letters_ap_df <- pairwise_ap %>%
+  group_by(nutrient) %>%
+  group_modify(~ make_letters_ap(.x)) %>%
+  ungroup()
+
+letters_ap_df
+
+# ---------------------------------------------------------
+# 3. Get y-positions for letter placement
+# ---------------------------------------------------------
+letter_pos_ap <- plot_long %>%
+  group_by(nutrient, dataset) %>%
+  summarise(
+    y_pos = max(value, na.rm = TRUE) + 0.08 * diff(range(value, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+letters_plot_ap <- letters_ap_df %>%
+  left_join(letter_pos_ap, by = c("nutrient", "dataset")) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    dataset = factor(dataset, levels = c("Fixed_0_15_CID", "Ap_truncated_0_15", "Ap_full"))
+  )
+
+# ---------------------------------------------------------
+# 4. Make labelled boxplot
+# ---------------------------------------------------------
+dataset_labs <- c(
+  "Fixed_0_15_CID" = "Fixed depth\n0–15 cm",
+  "Ap_truncated_0_15" = "Ap truncated\n0–15 cm",
+  "Ap_full" = "Full Ap"
+)
+
+dataset_cols <- c(
+  "Fixed_0_15_CID" = "#0072B2",
+  "Ap_truncated_0_15" = "#009E73",
+  "Ap_full" = "#D55E00"
+)
+
+p_box_letters <- ggplot(plot_long, aes(x = dataset, y = value, fill = dataset)) +
+  geom_boxplot(outlier.alpha = 0.35, width = 0.72) +
+  geom_text(
+    data = letters_plot_ap,
+    aes(x = dataset, y = y_pos, label = letters),
+    inherit.aes = FALSE,
+    size = 5,
+    fontface = "bold"
+  ) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_x_discrete(labels = dataset_labs) +
+  scale_fill_manual(values = dataset_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Fixed-depth and Ap-based soil fertility comparisons",
+    subtitle = "Different letters indicate significant pairwise differences within each nutrient"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 25, l = 15)
+  )
+
+p_box_letters
+
+ggsave(
+  "../output_do_not_push/ap_vs_depth_boxplots_letters.png",
+  p_box_letters,
+  width = 11,
+  height = 8,
+  dpi = 300
+)
 ```
+```{r}
+# ---------------------------------------------------------
+# 1. Build significance labels
+# ---------------------------------------------------------
+sig_label <- function(p) {
+  case_when(
+    is.na(p)      ~ "ns",
+    p <= 0.001    ~ "***",
+    p <= 0.01     ~ "**",
+    p <= 0.05     ~ "*",
+    TRUE          ~ "ns"
+  )
+}
+
+sig_df <- bind_rows(
+  fixed_vs_trunc %>%
+    transmute(
+      nutrient,
+      group1 = "Fixed_0_15_CID",
+      group2 = "Ap_truncated_0_15",
+      test_code = "RS",
+      p_adj = wilcox_p_adj_BH
+    ),
+  fixed_vs_full %>%
+    transmute(
+      nutrient,
+      group1 = "Fixed_0_15_CID",
+      group2 = "Ap_full",
+      test_code = "RS",
+      p_adj = wilcox_p_adj_BH
+    ),
+  paired_tests %>%
+    transmute(
+      nutrient,
+      group1 = "Ap_truncated_0_15",
+      group2 = "Ap_full",
+      test_code = "SR",
+      p_adj = wilcox_p_adj_BH
+    )
+    ) %>%
+ mutate(sig = sig_label(p_adj),
+        label = paste(test_code, sig)) %>%
+  filter(sig != "ns")
+
+sig_df
+
+# ---------------------------------------------------------
+# 2. Set factor order
+# ---------------------------------------------------------
+dataset_levels <- c("Fixed_0_15_CID", "Ap_truncated_0_15", "Ap_full")
+
+plot_long2 <- plot_long %>%
+  mutate(dataset = factor(dataset, levels = dataset_levels))
+
+sig_df <- sig_df %>%
+  mutate(
+    group1 = factor(group1, levels = dataset_levels),
+    group2 = factor(group2, levels = dataset_levels)
+  )
+
+# ---------------------------------------------------------
+# 3. Build y positions for brackets
+# ---------------------------------------------------------
+panel_ranges <- plot_long2 %>%
+  group_by(nutrient) %>%
+  summarise(
+    y_max = max(value, na.rm = TRUE),
+    y_min = min(value, na.rm = TRUE),
+    y_span = y_max - y_min,
+    .groups = "drop"
+  )
+
+sig_plot_df <- sig_df %>%
+  left_join(panel_ranges, by = "nutrient") %>%
+  group_by(nutrient) %>%
+  arrange(group1, group2, .by_group = TRUE) %>%
+  mutate(
+    bracket_level = row_number(),
+    y = y_max + bracket_level * 0.08 * ifelse(y_span == 0, 1, y_span),
+    x1 = as.numeric(group1),
+    x2 = as.numeric(group2),
+    x_mid = (x1 + x2) / 2
+  ) %>%
+  ungroup()
+
+sig_plot_df
+
+# ---------------------------------------------------------
+# 4. Plot with brackets
+# ---------------------------------------------------------
+dataset_labs <- c(
+  "Fixed_0_15_CID" = "Fixed depth\n0–15 cm",
+  "Ap_truncated_0_15" = "Ap truncated\n0–15 cm",
+  "Ap_full" = "Full Ap"
+)
+
+dataset_cols <- c(
+  "Fixed_0_15_CID" = "#0072B2",
+  "Ap_truncated_0_15" = "#009E73",
+  "Ap_full" = "#D55E00"
+)
+
+p_box_brackets <- ggplot(plot_long2, aes(x = dataset, y = value, fill = dataset)) +
+  geom_boxplot(outlier.alpha = 0.35, width = 0.72) +
+  
+  # bracket verticals
+  geom_segment(
+    data = sig_plot_df,
+    aes(x = x1, xend = x1, y = y - 0.02 * y_span, yend = y),
+    inherit.aes = FALSE,
+    linewidth = 0.5
+  ) +
+  geom_segment(
+    data = sig_plot_df,
+    aes(x = x2, xend = x2, y = y - 0.02 * y_span, yend = y),
+    inherit.aes = FALSE,
+    linewidth = 0.5
+  ) +
+  # bracket top
+  geom_segment(
+    data = sig_plot_df,
+    aes(x = x1, xend = x2, y = y, yend = y),
+    inherit.aes = FALSE,
+    linewidth = 0.5
+  ) +
+  # bracket label
+  geom_text(
+    data = sig_plot_df,
+    aes(x = x_mid, y = y + 0.04 * y_span, label = label),
+    inherit.aes = FALSE,
+    size = 3.3,
+    fontface = "bold"
+  ) +
+  
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_x_discrete(labels = dataset_labs) +
+  scale_fill_manual(values = dataset_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Fixed-depth and Ap-based soil fertility comparisons",
+    subtitle = "RS = Wilcoxon rank-sum; SR = Wilcoxon signed-rank",
+    caption = "* p ≤ 0.05   ** p ≤ 0.01   *** p ≤ 0.001"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+  legend.position = "none",
+  axis.text.x = element_text(angle = 20, hjust = 1),
+  strip.text = element_text(face = "bold"),
+  panel.grid.minor = element_blank(),
+  plot.margin = margin(t = 10, r = 10, b = 25, l = 15),
+  plot.caption = element_text(hjust = 1, size = 10))
+
+p_box_brackets
+
+ggsave(
+  "../output_do_not_push/ap_vs_depth_boxplots_brackets.png",
+  p_box_brackets,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+```
+
 
