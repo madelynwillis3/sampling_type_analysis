@@ -132,7 +132,7 @@ nutrient_names <- c(
   "zn"     = "Zinc (Zn)",
   "p_h_2"  = "pH",
   "lbc_1"  = "Lime Buffer Capacity (LBC)",
-  "lb_ceq" = "Lime Buffer Capacity Equivalent (LBCeq)"
+  "lb_ceq" = "Lime Buffer Capacity Equilibrium (LBCeq)"
 )
 
 lime_plot <- lime_clean %>%
@@ -1099,7 +1099,7 @@ write_csv(variogram_summary_all, "../output_do_not_push/standard_checks/variogra
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -1435,7 +1435,7 @@ p_spacing
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -1555,7 +1555,7 @@ ggsave(
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -1693,7 +1693,7 @@ ggsave(
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -1839,7 +1839,7 @@ write_csv(
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -1951,7 +1951,7 @@ write_csv(
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -2075,7 +2075,7 @@ library(tidyverse)
 nutrient_labs <- c(
   ca     = "Calcium (Ca)",
   k      = "Potassium (K)",
-  lb_ceq = "Lime Buffer Capacity (Equivalent)",
+  lb_ceq = "Lime Buffer Capacity (Equilibrium)",
   lbc_1  = "Lime Buffer Capacity",
   mg     = "Magnesium (Mg)",
   mn     = "Manganese (Mn)",
@@ -2153,6 +2153,8 @@ ggsave(
 ap_trunc <- read_csv("../data_do_not_push/hz_0_15_wide_03_30_2026.csv", show_col_types = FALSE)
 ap_full  <- read_csv("../data_do_not_push/perry_Ap_data_full_02_10_2026.csv", show_col_types = FALSE)
 fixed_15 <- read_csv("../data_do_not_push/perry_soil_points_surface_03_2026.csv", show_col_types = FALSE)
+#find points that are not in ap_trunc (in the points 1-81, ap_trunc only has 59 of these 81 points, need to find which points are missing)
+ap_missing <- setdiff(unique(ap_full$Point), unique(ap_trunc$Point))
 
 # ---------------------------------------------------------
 # 2. Keep only fertility variables
@@ -2225,10 +2227,10 @@ ap_full_point <- ap_full2 %>%
 
 # ---------------------------------------------------------
 # 4. Standardize fixed depth
-# choose CID as main fertility comparison
+# choose SPID as main fertility comparison
 # ---------------------------------------------------------
 fixed_152 <- fixed_15 %>%
-  filter(type == "CID") %>%
+  filter(type == "SPID") %>%
   transmute(
     point = PointLabel,
     ca = Ca,
@@ -2269,7 +2271,7 @@ summarize_dataset <- function(df, dataset_name) {
     )
 }
 
-summary_fixed <- summarize_dataset(fixed_152, "Fixed_0_15_CID")
+summary_fixed <- summarize_dataset(fixed_152, "Fixed_0_15_SPID")
 summary_ap_trunc <- summarize_dataset(ap_trunc2, "Ap_truncated_0_15")
 summary_ap_full <- summarize_dataset(ap_full_point, "Ap_full")
 
@@ -2318,7 +2320,7 @@ fixed_vs_trunc <- purrr::map_dfr(soil_vars, function(v) {
   y <- ap_trunc2[[v]]
   
   tmp <- tibble(
-    group = c(rep("Fixed_0_15_CID", length(x)), rep("Ap_truncated_0_15", length(y))),
+    group = c(rep("Fixed_0_15_SPID", length(x)), rep("Ap_truncated_0_15", length(y))),
     value = c(x, y)
   ) %>% drop_na()
   
@@ -2346,7 +2348,7 @@ fixed_vs_full <- purrr::map_dfr(soil_vars, function(v) {
   y <- ap_full_point[[v]]
   
   tmp <- tibble(
-    group = c(rep("Fixed_0_15_CID", length(x)), rep("Ap_full", length(y))),
+    group = c(rep("Fixed_0_15_SPID", length(x)), rep("Ap_full", length(y))),
     value = c(x, y)
   ) %>% drop_na()
   
@@ -2398,14 +2400,14 @@ ap_trunc2 <- ap_trunc2 %>%
 ap_full_point <- ap_full_point %>%
   mutate(point = as.character(point))
 plot_long <- bind_rows(
-  fixed_152 %>% mutate(dataset = "Fixed_0_15_CID"),
+  fixed_152 %>% mutate(dataset = "Fixed_0_15_SPID"),
   ap_trunc2 %>% mutate(dataset = "Ap_truncated_0_15"),
   ap_full_point %>% mutate(dataset = "Ap_full")
 ) %>%
   pivot_longer(cols = all_of(soil_vars), names_to = "nutrient", values_to = "value") %>%
   mutate(
     nutrient = factor(nutrient, levels = names(nutrient_labs)),
-    dataset = factor(dataset, levels = c("Fixed_0_15_CID", "Ap_truncated_0_15", "Ap_full"))
+    dataset = factor(dataset, levels = c("Fixed_0_15_SPID", "Ap_truncated_0_15", "Ap_full"))
   )
 
 p_box <- ggplot(plot_long, aes(x = dataset, y = value, fill = dataset)) +
@@ -2466,14 +2468,14 @@ pairwise_ap <- bind_rows(
   fixed_vs_trunc %>%
     transmute(
       nutrient,
-      group1 = "Fixed_0_15_CID",
+      group1 = "Fixed_0_15_SPID",
       group2 = "Ap_truncated_0_15",
       p_adj = wilcox_p_adj_BH
     ),
   fixed_vs_full %>%
     transmute(
       nutrient,
-      group1 = "Fixed_0_15_CID",
+      group1 = "Fixed_0_15_SPID",
       group2 = "Ap_full",
       p_adj = wilcox_p_adj_BH
     ),
@@ -2530,20 +2532,20 @@ letters_plot_ap <- letters_ap_df %>%
   left_join(letter_pos_ap, by = c("nutrient", "dataset")) %>%
   mutate(
     nutrient = factor(nutrient, levels = names(nutrient_labs)),
-    dataset = factor(dataset, levels = c("Fixed_0_15_CID", "Ap_truncated_0_15", "Ap_full"))
+    dataset = factor(dataset, levels = c("Fixed_0_15_SPID", "Ap_truncated_0_15", "Ap_full"))
   )
 
 # ---------------------------------------------------------
 # 4. Make labelled boxplot
 # ---------------------------------------------------------
 dataset_labs <- c(
-  "Fixed_0_15_CID" = "Fixed depth\n0–15 cm",
+  "Fixed_0_15_SPID" = "Fixed depth\n0–15 cm",
   "Ap_truncated_0_15" = "Ap truncated\n0–15 cm",
   "Ap_full" = "Full Ap"
 )
 
 dataset_cols <- c(
-  "Fixed_0_15_CID" = "#0072B2",
+  "Fixed_0_15_SPID" = "#0072B2",
   "Ap_truncated_0_15" = "#009E73",
   "Ap_full" = "#D55E00"
 )
@@ -2604,7 +2606,7 @@ sig_df <- bind_rows(
   fixed_vs_trunc %>%
     transmute(
       nutrient,
-      group1 = "Fixed_0_15_CID",
+      group1 = "Fixed_0_15_SPID",
       group2 = "Ap_truncated_0_15",
       test_code = "RS",
       p_adj = wilcox_p_adj_BH
@@ -2612,7 +2614,7 @@ sig_df <- bind_rows(
   fixed_vs_full %>%
     transmute(
       nutrient,
-      group1 = "Fixed_0_15_CID",
+      group1 = "Fixed_0_15_SPID",
       group2 = "Ap_full",
       test_code = "RS",
       p_adj = wilcox_p_adj_BH
@@ -2635,7 +2637,7 @@ sig_df
 # ---------------------------------------------------------
 # 2. Set factor order
 # ---------------------------------------------------------
-dataset_levels <- c("Fixed_0_15_CID", "Ap_truncated_0_15", "Ap_full")
+dataset_levels <- c("Fixed_0_15_SPID", "Ap_truncated_0_15", "Ap_full")
 
 plot_long2 <- plot_long %>%
   mutate(dataset = factor(dataset, levels = dataset_levels))
@@ -2677,13 +2679,13 @@ sig_plot_df
 # 4. Plot with brackets
 # ---------------------------------------------------------
 dataset_labs <- c(
-  "Fixed_0_15_CID" = "Fixed depth\n0–15 cm",
+  "Fixed_0_15_SPID" = "Fixed depth\n0–15 cm",
   "Ap_truncated_0_15" = "Ap truncated\n0–15 cm",
   "Ap_full" = "Full Ap"
 )
 
 dataset_cols <- c(
-  "Fixed_0_15_CID" = "#0072B2",
+  "Fixed_0_15_SPID" = "#0072B2",
   "Ap_truncated_0_15" = "#009E73",
   "Ap_full" = "#D55E00"
 )
@@ -2749,6 +2751,219 @@ ggsave(
   height = 10,
   dpi = 300
 )
+```
+```{r}
+# fixed_15 already loaded
+soil_vars <- c("lbc_1", "lb_ceq", "p_h_2", "ca", "k", "mg", "mn", "p", "zn")
+
+# ---------------------------------------------------------
+# 1. Standardize Perry fixed-depth support data
+#    SPID = single point, CID = composite
+# ---------------------------------------------------------
+perry_surface <- fixed_15 %>%
+  transmute(
+    point = as.character(PointLabel),
+    type = type,
+    lbc_1 = `LBC.1`,
+    lb_ceq = LBCeq,
+    p_h_2 = `pH.2`,
+    ca = Ca,
+    k = K,
+    mg = Mg,
+    mn = Mn,
+    p = P,
+    zn = Zn,
+    x,
+    y
+  ) %>%
+  filter(type %in% c("SPID", "CID"))
+
+# ---------------------------------------------------------
+# 2. Check pairing structure
+# ---------------------------------------------------------
+pair_check <- perry_surface %>%
+  count(point, type) %>%
+  pivot_wider(names_from = type, values_from = n, values_fill = 0)
+
+pair_check
+
+odd_points <- pair_check %>%
+  filter(SPID != 1 | CID != 1)
+
+odd_points
+
+# ---------------------------------------------------------
+# 3. Build paired wide table
+# ---------------------------------------------------------
+perry_wide <- perry_surface %>%
+  pivot_wider(
+    names_from = type,
+    values_from = all_of(soil_vars),
+    names_glue = "{.value}_{type}"
+  ) %>%
+  arrange(point)
+
+perry_wide
+
+# ---------------------------------------------------------
+# 4. Paired Wilcoxon signed-rank tests by nutrient
+# ---------------------------------------------------------
+perry_sp_vs_comp <- purrr::map_dfr(soil_vars, function(v) {
+  sp <- perry_wide[[paste0(v, "_SPID")]]
+  cp <- perry_wide[[paste0(v, "_CID")]]
+  
+  tmp <- tibble(sp = sp, cp = cp) %>% drop_na()
+  
+  wt <- wilcox.test(tmp$sp, tmp$cp, paired = TRUE, exact = FALSE)
+  ct <- suppressWarnings(cor.test(tmp$sp, tmp$cp, method = "spearman", exact = FALSE))
+  
+  tibble(
+    nutrient = v,
+    n = nrow(tmp),
+    median_sp = median(tmp$sp, na.rm = TRUE),
+    median_comp = median(tmp$cp, na.rm = TRUE),
+    median_diff = median(tmp$cp - tmp$sp, na.rm = TRUE),
+    median_pct_diff = median(ifelse(tmp$sp == 0, NA, 100 * (tmp$cp - tmp$sp) / tmp$sp), na.rm = TRUE),
+    mean_abs_diff = mean(abs(tmp$cp - tmp$sp), na.rm = TRUE),
+    spearman_rho = unname(ct$estimate),
+    spearman_p = ct$p.value,
+    wilcox_p = wt$p.value
+  )
+}) %>%
+  mutate(
+    wilcox_p_adj_BH = p.adjust(wilcox_p, method = "BH"),
+    spearman_p_adj_BH = p.adjust(spearman_p, method = "BH"),
+    sig = case_when(
+      wilcox_p_adj_BH <= 0.001 ~ "***",
+      wilcox_p_adj_BH <= 0.01  ~ "**",
+      wilcox_p_adj_BH <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+perry_sp_vs_comp
+
+# ---------------------------------------------------------
+# 5. Plot data
+# ---------------------------------------------------------
+plot_long <- perry_surface %>%
+  pivot_longer(cols = all_of(soil_vars), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    type = factor(type, levels = c("SPID", "CID"))
+  )
+
+nutrient_labs <- c(
+  ca = "Calcium (Ca)",
+  k = "Potassium (K)",
+  lb_ceq = "LBCeq",
+  lbc_1 = "LBC",
+  mg = "Magnesium (Mg)",
+  mn = "Manganese (Mn)",
+  p = "Phosphorus (P)",
+  p_h_2 = "pH",
+  zn = "Zinc (Zn)"
+)
+
+type_labs <- c(
+  "SPID" = "Single point 0–15 cm",
+  "CID"  = "Composite 0–15 cm"
+)
+
+type_cols <- c(
+  "SPID" = "#0072B2",
+  "CID"  = "#009E73"
+)
+
+# ---------------------------------------------------------
+# 6. Bracket labels
+# ---------------------------------------------------------
+sig_plot_df <- perry_sp_vs_comp %>%
+  left_join(
+    plot_long %>%
+      group_by(nutrient) %>%
+      summarise(
+        y_max = max(value, na.rm = TRUE),
+        y_min = min(value, na.rm = TRUE),
+        y_span = y_max - y_min,
+        .groups = "drop"
+      ),
+    by = "nutrient"
+  ) %>%
+  mutate(
+    x1 = 1,
+    x2 = 2,
+    x_mid = 1.5,
+    y = y_max + 0.10 * ifelse(y_span == 0, 1, y_span),
+    label = sig
+  ) %>%
+  filter(sig != "ns")
+
+# ---------------------------------------------------------
+# 7. Figure
+# ---------------------------------------------------------
+p_perry <- ggplot(plot_long, aes(x = type, y = value, fill = type)) +
+  geom_boxplot(outlier.alpha = 0.35, width = 0.72) +
+  geom_segment(
+    data = sig_plot_df,
+    aes(x = x1, xend = x1, y = y - 0.02 * y_span, yend = y),
+    inherit.aes = FALSE,
+    linewidth = 0.5
+  ) +
+  geom_segment(
+    data = sig_plot_df,
+    aes(x = x2, xend = x2, y = y - 0.02 * y_span, yend = y),
+    inherit.aes = FALSE,
+    linewidth = 0.5
+  ) +
+  geom_segment(
+    data = sig_plot_df,
+    aes(x = x1, xend = x2, y = y, yend = y),
+    inherit.aes = FALSE,
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = sig_plot_df,
+    aes(x = x_mid, y = y + 0.02 * y_span, label = label),
+    inherit.aes = FALSE,
+    size = 4.2,
+    fontface = "bold"
+  ) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_x_discrete(labels = type_labs) +
+  scale_fill_manual(values = type_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Perry cropland: single-point versus composite sampling at 0–15 cm",
+    subtitle = "Asterisks indicate paired Wilcoxon signed-rank tests"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 25, l = 15)
+  )
+
+p_perry
+
+# ---------------------------------------------------------
+# 8. Save outputs
+# ---------------------------------------------------------
+write_csv(perry_sp_vs_comp, "../output_do_not_push/perry_sp_vs_comp_results.csv")
+write_csv(perry_wide, "../output_do_not_push/perry_sp_vs_comp_wide.csv")
+
+ggsave(
+  "../output_do_not_push/perry_sp_vs_comp_boxplots.png",
+  p_perry,
+  width = 11,
+  height = 8,
+  dpi = 300
+)
+
+
 ```
 
 
