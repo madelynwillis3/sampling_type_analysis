@@ -143,34 +143,43 @@ lime_plot <- lime_clean %>%
     sampling_type3 = case_when(
       type == "0-4" ~ "Composite 0–10 cm",
       type == "4-8" ~ "Composite 10-20 cm",
-      type %in% c("A","B") ~ "Single Point (A+B)",
+      type %in% c("A","B") ~ "Single Point Mean (A+B)",
       TRUE ~ NA_character_
     ),
     sampling_type3 = factor(
       sampling_type3,
-      levels = c("Composite 0–10 cm", "Composite 10-20 cm", "Single Point (A+B)")
+      levels = c("Composite 0–10 cm", "Composite 10-20 cm", "Single Point Mean (A+B)")
     ),
     nutrient = dplyr::recode(nutrient, !!!nutrient_names),
     nutrient = factor(nutrient, levels = unname(nutrient_names))
   ) %>%
   filter(!is.na(sampling_type3), !is.na(value))
 
-p_den <- ggplot(lime_plot, aes(x = value, fill = sampling_type3)) +
-  geom_density(alpha = 0.5) +
+p_den <- ggplot(lime_plot, aes(x = value, fill = sampling_type3, color = sampling_type3)) +
+  geom_density(alpha = 0.3) +
   facet_wrap(~ nutrient, scales = "free") +
   scale_fill_manual(
     values = c(
-      "Composite 0–10 cm" = "#1f77b4",
-      "Composite 10-20 cm" = "#2ca02c",
-      "Single Point (A+B)" = "#ff7f0e"
+      "Composite 0–10 cm"        = "#1f77b4",
+      "Composite 10-20 cm"       = "#2ca02c",
+      "Single Point Mean (A+B)"  = "#ff7f0e"
+    ),
+    na.translate = FALSE
+  ) +
+  scale_color_manual(
+    values = c(
+      "Composite 0–10 cm"        = "#1f77b4",
+      "Composite 10-20 cm"       = "#2ca02c",
+      "Single Point Mean (A+B)"  = "#ff7f0e"
     ),
     na.translate = FALSE
   ) +
   labs(
-    x = "Value (log1p-transformed except pH)",
-    y = "Density",
+    x     = "Value (log1p-transformed except pH)",
+    y     = "Density",
     title = "Density Plots of Bermuda Hay Grassland Soil Nutrients by Sampling Type",
-    fill = "Sampling Type"
+    fill  = "Sampling Type",
+    color = "Sampling Type"   # keeps fill & color merged in the legend
   ) +
   theme_minimal(base_size = 14) +
   theme(legend.position = "bottom")
@@ -2459,6 +2468,138 @@ write_csv(fixed_vs_full, "../output_do_not_push/ap_vs_depth_fixed_vs_full.csv")
 write_csv(variability_compare, "../output_do_not_push/ap_vs_depth_variability_compare.csv")
 ```
 
+
+```{r Perry Density}
+
+nutrients_15     <- c("Ca", "K", "Mg", "Mn", "P", "Zn", "pH.2", "LBC.1", "LBCeq")
+nutrients_to_log_15 <- setdiff(nutrients_15, "pH.2")
+
+nutrient_names_15 <- c(
+  "Ca"    = "Calcium (Ca)",
+  "K"     = "Potassium (K)",
+  "Mg"    = "Magnesium (Mg)",
+  "Mn"    = "Manganese (Mn)",
+  "P"     = "Phosphorus (P)",
+  "Zn"    = "Zinc (Zn)",
+  "pH.2"  = "pH",
+  "LBC.1" = "Lime Buffer Capacity (LBC)",
+  "LBCeq" = "Lime Buffer Capacity Equilibrium (LBCeq)"
+)
+
+lime_plot_15 <- fixed_15 %>%
+  mutate(across(all_of(nutrients_to_log_15), ~ log1p(.))) %>%
+  pivot_longer(all_of(nutrients_15), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    sampling_type = case_when(
+      type == "SPID" ~ "Single Point (0–15 cm)",
+      type == "CID"  ~ "Composite (0–15 cm)",
+      TRUE ~ NA_character_
+    ),
+    sampling_type = factor(
+      sampling_type,
+      levels = c("Single Point (0–15 cm)", "Composite (0–15 cm)")
+    ),
+    nutrient = dplyr::recode(nutrient, !!!nutrient_names_15),
+    nutrient = factor(nutrient, levels = unname(nutrient_names_15))
+  ) %>%
+  filter(!is.na(sampling_type), !is.na(value))
+
+p_den_15 <- ggplot(lime_plot_15, aes(x = value, fill = sampling_type, color = sampling_type)) +
+  geom_density(alpha = 0.3) +
+  facet_wrap(~ nutrient, scales = "free") +
+  scale_fill_manual(
+    values = c(
+      "Single Point (0–15 cm)" = "#9467bd",
+      "Composite (0–15 cm)"    = "#e377c2"
+    ),
+    na.translate = FALSE
+  ) +
+  scale_color_manual(
+    values = c(
+      "Single Point (0–15 cm)" = "#9467bd",
+      "Composite (0–15 cm)"    = "#e377c2"
+    ),
+    na.translate = FALSE
+  ) +
+  labs(
+    x     = "Value (log1p-transformed except pH)",
+    y     = "Density",
+    title = "Cropland Density Plots of 0–15 cm Soil Nutrients by Sampling Type",
+    fill  = "Sampling Type",
+    color = "Sampling Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+p_den_15
+
+ggsave("../output_do_not_push/nutrient_density_plots_15cm.png",
+       p_den_15, width = 12, height = 8, dpi = 300, units = "in", limitsize = FALSE)
+
+```
+
+```{r}
+nutrients_ap <- c("ca", "k", "mg", "mn", "p", "zn", "p_h_2", "lbc_1", "lb_ceq")
+nutrients_to_log_ap <- setdiff(nutrients_ap, "p_h_2")
+
+nutrient_names_ap <- c(
+  "ca"     = "Calcium (Ca)",
+  "k"      = "Potassium (K)",
+  "mg"     = "Magnesium (Mg)",
+  "mn"     = "Manganese (Mn)",
+  "p"      = "Phosphorus (P)",
+  "zn"     = "Zinc (Zn)",
+  "p_h_2"  = "pH",
+  "lbc_1"  = "Lime Buffer Capacity (LBC)",
+  "lb_ceq" = "Lime Buffer Capacity Equilibrium (LBCeq)"
+)
+
+# Reuse the already-cleaned data frames from the PERRY chunk
+plot_long_den <- bind_rows(
+  fixed_152    %>% mutate(dataset = "Fixed depth 0–15 cm "),
+  ap_trunc2    %>% mutate(dataset = "Ap truncated 0–15 cm"),
+  ap_full_point %>% mutate(dataset = "Full Ap (thickness-weighted)")
+) %>%
+  mutate(across(all_of(nutrients_to_log_ap), ~ log1p(.))) %>%
+  pivot_longer(cols = all_of(nutrients_ap), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    dataset = factor(
+      dataset,
+      levels = c("Fixed depth 0–15 cm ", "Ap truncated 0–15 cm", "Full Ap (thickness-weighted)")
+    ),
+    nutrient = dplyr::recode(nutrient, !!!nutrient_names_ap),
+    nutrient = factor(nutrient, levels = unname(nutrient_names_ap))
+  ) %>%
+  filter(!is.na(dataset), !is.na(value))
+
+ap_den_cols <- c(
+  "Fixed depth 0–15 cm "      = "#0072B2",
+  "Ap truncated 0–15 cm"            = "#009E73",
+  "Full Ap (thickness-weighted)"    = "#D55E00"
+)
+
+p_den_ap <- ggplot(plot_long_den, aes(x = value, fill = dataset, color = dataset)) +
+  geom_density(alpha = 0.3) +
+  facet_wrap(~ nutrient, scales = "free") +
+  scale_fill_manual(values = ap_den_cols, na.translate = FALSE) +
+  scale_color_manual(values = ap_den_cols, na.translate = FALSE) +
+  labs(
+    x     = "Value (log1p-transformed except pH)",
+    y     = "Density",
+    title = "Cropland Density Plots of Single-Point Soil Nutrients by Sampling Method and Depth Definition",
+    fill  = "Sampling Type",
+    color = "Sampling Type"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "bottom")
+
+p_den_ap
+
+ggsave("../output_do_not_push/nutrient_density_plots_ap_vs_fixed.png",
+       p_den_ap, width = 12, height = 8, dpi = 300, units = "in", limitsize = FALSE)
+```
+
+
 ```{r}
 
 # ---------------------------------------------------------
@@ -2965,5 +3106,1064 @@ ggsave(
 
 
 ```
+```{r}
+#Tables for the paper:
 
+#table has nutrients on rows, and columns are the comparisons and data is significances with ***. 
+#single point vs composite, single point vs truncated Ap, composite vs truncated Ap.
+#can also do composite vs truncated and full ap. 
+
+# ---------------------------------------------------------
+# 1. helper for stars
+# ---------------------------------------------------------
+sig_stars <- function(p) {
+  case_when(
+    is.na(p)    ~ "",
+    p <= 0.001  ~ "***",
+    p <= 0.01   ~ "**",
+    p <= 0.05   ~ "*",
+    TRUE        ~ "ns"
+  )
+}
+
+# ---------------------------------------------------------
+# 2. build final cropland comparison table
+# ---------------------------------------------------------
+cropland_table <- full_join(
+  perry_sp_vs_comp %>%
+    transmute(
+      nutrient,
+      `SP vs COMP (0–15)` = sig_stars(wilcox_p_adj_BH)
+    ),
+  sp_vs_trunc %>%
+    transmute(
+      nutrient,
+      `SP vs Ap 0–15` = sig_stars(wilcox_p_adj_BH)
+    ),
+  by = "nutrient"
+) %>%
+  full_join(
+    sp_vs_full %>%
+      transmute(
+        nutrient,
+        `SP vs Full Ap` = sig_stars(wilcox_p_adj_BH)
+      ),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    fixed_vs_trunc %>%
+      transmute(
+        nutrient,
+        `COMP vs Ap 0–15` = sig_stars(wilcox_p_adj_BH)
+      ),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    fixed_vs_full %>%
+      transmute(
+        nutrient,
+        `COMP vs Full Ap` = sig_stars(wilcox_p_adj_BH)
+      ),
+    by = "nutrient"
+  ) %>%
+  mutate(
+    nutrient = factor(
+      nutrient,
+      levels = c("ca", "k", "lb_ceq", "lbc_1", "mg", "mn", "p", "p_h_2", "zn")
+    )
+  ) %>%
+  arrange(nutrient)
+
+cropland_table
+
+cropland_table_stars <- cropland_table %>%
+  mutate(
+    nutrient = case_when(
+      nutrient == "ca"     ~ "Calcium (Ca)",
+      nutrient == "k"      ~ "Potassium (K)",
+      nutrient == "lb_ceq" ~ "LBCeq",
+      nutrient == "lbc_1"  ~ "LBC",
+      nutrient == "mg"     ~ "Magnesium (Mg)",
+      nutrient == "mn"     ~ "Manganese (Mn)",
+      nutrient == "p"      ~ "Phosphorus (P)",
+      nutrient == "p_h_2"  ~ "pH",
+      nutrient == "zn"     ~ "Zinc (Zn)",
+      TRUE ~ as.character(nutrient)
+    )
+  )
+
+cropland_table_stars
+
+cropland_table_full <- full_join(
+  perry_sp_vs_comp %>%
+    transmute(
+      nutrient,
+      `SP vs COMP (0–15)` = sig_stars(wilcox_p_adj_BH),
+      `SP vs COMP p_adj` = signif(wilcox_p_adj_BH, 3)
+    ),
+  sp_vs_trunc %>%
+    transmute(
+      nutrient,
+      `SP vs Ap 0–15` = sig_stars(wilcox_p_adj_BH),
+      `SP vs Ap 0–15 p_adj` = signif(wilcox_p_adj_BH, 3)
+    ),
+  by = "nutrient"
+) %>%
+  full_join(
+    sp_vs_full %>%
+      transmute(
+        nutrient,
+        `SP vs Full Ap` = sig_stars(wilcox_p_adj_BH),
+        `SP vs Full Ap p_adj` = signif(wilcox_p_adj_BH, 3)
+      ),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    fixed_vs_trunc %>%
+      transmute(
+        nutrient,
+        `COMP vs Ap 0–15` = sig_stars(wilcox_p_adj_BH),
+        `COMP vs Ap 0–15 p_adj` = signif(wilcox_p_adj_BH, 3)
+      ),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    fixed_vs_full %>%
+      transmute(
+        nutrient,
+        `COMP vs Full Ap` = sig_stars(wilcox_p_adj_BH),
+        `COMP vs Full Ap p_adj` = signif(wilcox_p_adj_BH, 3)
+      ),
+    by = "nutrient"
+  ) %>%
+  mutate(
+    nutrient = factor(
+      nutrient,
+      levels = c("ca", "k", "lb_ceq", "lbc_1", "mg", "mn", "p", "p_h_2", "zn")
+    )
+  ) %>%
+  arrange(nutrient)
+
+cropland_table_full
+
+# ---------------------------------------------------------
+# helper to format adjusted p-values with stars
+# ---------------------------------------------------------
+fmt_p <- function(p) {
+  stars <- dplyr::case_when(
+    is.na(p)    ~ "",
+    p <= 0.001  ~ "***",
+    p <= 0.01   ~ "**",
+    p <= 0.05   ~ "*",
+    TRUE        ~ ""
+  )
+  
+  p_txt <- dplyr::case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ format(p, scientific = TRUE, digits = 3),
+    TRUE      ~ format(round(p, 4), nsmall = 4, trim = TRUE)
+  )
+  
+  paste0(p_txt, stars)
+}
+
+# ---------------------------------------------------------
+# cropland comparison table: nutrients on rows, comparisons on columns
+# ---------------------------------------------------------
+cropland_table_p <- full_join(
+  perry_sp_vs_comp %>%
+    transmute(
+      nutrient,
+      `SP vs COMP (0–15)` = fmt_p(wilcox_p_adj_BH)
+    ),
+  sp_vs_trunc %>%
+    transmute(
+      nutrient,
+      `SP vs Ap 0–15` = fmt_p(wilcox_p_adj_BH)
+    ),
+  by = "nutrient"
+) %>%
+  full_join(
+    sp_vs_full %>%
+      transmute(
+        nutrient,
+        `SP vs Full Ap` = fmt_p(wilcox_p_adj_BH)
+      ),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    fixed_vs_trunc %>%
+      transmute(
+        nutrient,
+        `COMP vs Ap 0–15` = fmt_p(wilcox_p_adj_BH)
+      ),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    fixed_vs_full %>%
+      transmute(
+        nutrient,
+        `COMP vs Full Ap` = fmt_p(wilcox_p_adj_BH)
+      ),
+    by = "nutrient"
+  ) %>%
+  mutate(
+    nutrient = factor(
+      nutrient,
+      levels = c("ca", "k", "lb_ceq", "lbc_1", "mg", "mn", "p", "p_h_2", "zn")
+    )
+  ) %>%
+  arrange(nutrient) %>%
+  mutate(
+    nutrient = case_when(
+      nutrient == "ca"     ~ "Calcium (Ca)",
+      nutrient == "k"      ~ "Potassium (K)",
+      nutrient == "lb_ceq" ~ "LBCeq",
+      nutrient == "lbc_1"  ~ "LBC",
+      nutrient == "mg"     ~ "Magnesium (Mg)",
+      nutrient == "mn"     ~ "Manganese (Mn)",
+      nutrient == "p"      ~ "Phosphorus (P)",
+      nutrient == "p_h_2"  ~ "pH",
+      nutrient == "zn"     ~ "Zinc (Zn)",
+      TRUE ~ as.character(nutrient)
+    )
+  )
+
+cropland_table_p
+
+library(kableExtra)
+
+cropland_table_p %>%
+  kbl(
+    caption = "Adjusted p-values for cropland sampling comparisons by nutrient",
+    align = "lccccc",
+    booktabs = TRUE
+  ) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  footnote(
+    general = "Values are Benjamini–Hochberg adjusted p-values. SP vs COMP was evaluated with paired Wilcoxon signed-rank tests; SP/COMP vs Ap comparisons were evaluated with Wilcoxon rank-sum tests.",
+    general_title = "Note: "
+  )
+
+```
+
+
+```{r}
+
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "LBCeq",
+  lbc_1  = "LBC",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+site_labs <- c(
+  "Midville"     = "Midville",
+  "Tifton"       = "Tifton",
+  "Watkinsville" = "Watkinsville",
+  "ROME"         = "Rome",
+  "Perry"        = "Perry"
+)
+
+# ---------------------------------------------------------
+# Forage: use location-level repeated table already built
+# repeated_long has SP_mean, COMP_0_10, COMP_10_20
+# ---------------------------------------------------------
+forage_harmonized <- repeated_long %>%
+  filter(sample_support %in% c("SP_mean", "COMP_0_10")) %>%
+  mutate(
+    location_id = as.character(location_id),
+    land_use = "Forage",
+    support = case_when(
+      sample_support == "SP_mean" ~ "SP",
+      sample_support == "COMP_0_10" ~ "COMP"
+    )
+  ) %>%
+  select(site, location_id, nutrient, support, value, land_use)
+
+# ---------------------------------------------------------
+# Cropland: use Perry SPID and CID
+# ---------------------------------------------------------
+cropland_harmonized <- perry_surface %>%
+  pivot_longer(cols = all_of(soil_vars), names_to = "nutrient", values_to = "value") %>%
+  mutate(
+    site = "Perry",
+    land_use = "Cropland",
+    support = case_when(
+      type == "SPID" ~ "SP",
+      type == "CID" ~ "COMP"
+    ),
+    location_id = as.character(point)
+  ) %>%
+  select(site, location_id, nutrient, support, value, land_use)
+
+# combined
+cross_dat <- bind_rows(forage_harmonized, cropland_harmonized) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    support = factor(support, levels = c("SP","COMP")),
+    land_use = factor(land_use, levels = c("Forage","Cropland"))
+  )
+
+# Coastal Plain subset
+coastal_plain_dat <- cross_dat %>%
+  filter(site %in% c("Midville", "Tifton", "Perry")) %>%
+  mutate(
+    region_group = case_when(
+      site %in% c("Midville", "Tifton") ~ "Forage Coastal Plain",
+      site == "Perry" ~ "Cropland Coastal Plain"
+    )
+  )
+
+site_cols <- c(
+  "SP" = "#0072B2",
+  "COMP" = "#009E73"
+)
+
+p_all_sites <- cross_dat %>%
+  mutate(
+    site = factor(site, levels = c("ROME","Watkinsville","Midville","Tifton","Perry"))
+  ) %>%
+  ggplot(aes(x = site, y = value, fill = support)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.alpha = 0.3
+  ) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_x_discrete(labels = site_labs) +
+  scale_fill_manual(values = site_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    fill = "Support",
+    title = "Single-point and composite fertility values across forage and cropland sites",
+    subtitle = "Shown for visual context only; differences may also reflect year, management history, and site-specific conditions"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_all_sites
+
+ggsave(
+  "../output_do_not_push/fig_all_sites_SP_COMP_context.png",
+  p_all_sites,
+  width = 12,
+  height = 8.5,
+  dpi = 300
+)
+
+coastal_plain_tests <- coastal_plain_dat %>%
+  group_by(nutrient, support) %>%
+  wilcox_test(value ~ region_group) %>%
+  ungroup() %>%
+  group_by(support) %>%
+  mutate(p_adj_BH = p.adjust(p, method = "BH")) %>%
+  ungroup() %>%
+  mutate(
+    sig = case_when(
+      p_adj_BH <= 0.001 ~ "***",
+      p_adj_BH <= 0.01  ~ "**",
+      p_adj_BH <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+coastal_plain_summary <- coastal_plain_dat %>%
+  group_by(region_group, nutrient, support) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+coastal_plain_tests
+coastal_plain_summary
+
+cp_cols <- c(
+  "Forage Coastal Plain" = "#009E73",
+  "Cropland Coastal Plain" = "#D55E00"
+)
+
+p_cp <- coastal_plain_dat %>%
+  ggplot(aes(x = region_group, y = value, fill = region_group)) +
+  geom_boxplot(width = 0.72, outlier.alpha = 0.3) +
+  facet_grid(support ~ nutrient, scales = "free_y", labeller = labeller(nutrient = as_labeller(nutrient_labs))) +
+  scale_fill_manual(values = cp_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Coastal Plain comparison of forage and cropland fertility values",
+    subtitle = "Midville + Tifton pooled as forage Coastal Plain; Perry shown as cropland Coastal Plain"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_cp
+
+ggsave(
+  "../output_do_not_push/fig_coastal_plain_forage_vs_cropland.png",
+  p_cp,
+  width = 12,
+  height = 8.5,
+  dpi = 300
+)
+
+landuse_tests <- cross_dat %>%
+  group_by(nutrient, support) %>%
+  wilcox_test(value ~ land_use) %>%
+  ungroup() %>%
+  group_by(support) %>%
+  mutate(p_adj_BH = p.adjust(p, method = "BH")) %>%
+  ungroup() %>%
+  mutate(
+    sig = case_when(
+      p_adj_BH <= 0.001 ~ "***",
+      p_adj_BH <= 0.01  ~ "**",
+      p_adj_BH <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+landuse_summary <- cross_dat %>%
+  group_by(land_use, nutrient, support) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+landuse_tests
+landuse_summary
+
+landuse_cols <- c(
+  "Forage" = "#009E73",
+  "Cropland" = "#D55E00"
+)
+
+p_landuse <- cross_dat %>%
+  ggplot(aes(x = land_use, y = value, fill = land_use)) +
+  geom_boxplot(width = 0.72, outlier.alpha = 0.3) +
+  facet_grid(support ~ nutrient, scales = "free_y", labeller = labeller(nutrient = as_labeller(nutrient_labs))) +
+  scale_fill_manual(values = landuse_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value",
+    title = "Forage versus cropland fertility comparisons by support",
+    subtitle = "Comparisons are contextual only; differences may also reflect year, grid design, management history, and unmeasured external drivers"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_landuse
+
+ggsave(
+  "../output_do_not_push/fig_forage_vs_cropland_by_support.png",
+  p_landuse,
+  width = 12,
+  height = 8.5,
+  dpi = 300
+)
+
+fmt_p <- function(p) {
+  stars <- dplyr::case_when(
+    is.na(p)    ~ "",
+    p <= 0.001  ~ "***",
+    p <= 0.01   ~ "**",
+    p <= 0.05   ~ "*",
+    TRUE        ~ ""
+  )
+  
+  p_txt <- dplyr::case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ format(p, scientific = TRUE, digits = 3),
+    TRUE      ~ format(round(p, 4), nsmall = 4, trim = TRUE)
+  )
+  
+  paste0(p_txt, stars)
+}
+
+landuse_table <- full_join(
+  landuse_tests %>%
+    filter(support == "SP") %>%
+    transmute(nutrient, `Forage vs Cropland SP` = fmt_p(p_adj_BH)),
+  landuse_tests %>%
+    filter(support == "COMP") %>%
+    transmute(nutrient, `Forage vs Cropland COMP` = fmt_p(p_adj_BH)),
+  by = "nutrient"
+) %>%
+  full_join(
+    coastal_plain_tests %>%
+      filter(support == "SP") %>%
+      transmute(nutrient, `Coastal Plain SP` = fmt_p(p_adj_BH)),
+    by = "nutrient"
+  ) %>%
+  full_join(
+    coastal_plain_tests %>%
+      filter(support == "COMP") %>%
+      transmute(nutrient, `Coastal Plain COMP` = fmt_p(p_adj_BH)),
+    by = "nutrient"
+  ) %>%
+  mutate(
+    nutrient = case_when(
+      nutrient == "ca"     ~ "Calcium (Ca)",
+      nutrient == "k"      ~ "Potassium (K)",
+      nutrient == "lb_ceq" ~ "LBCeq",
+      nutrient == "lbc_1"  ~ "LBC",
+      nutrient == "mg"     ~ "Magnesium (Mg)",
+      nutrient == "mn"     ~ "Manganese (Mn)",
+      nutrient == "p"      ~ "Phosphorus (P)",
+      nutrient == "p_h_2"  ~ "pH",
+      nutrient == "zn"     ~ "Zinc (Zn)",
+      TRUE ~ as.character(nutrient)
+    )
+  )
+
+landuse_table
+```
+
+```{r}
+nutrient_labs <- c(
+  ca     = "Calcium (Ca)",
+  k      = "Potassium (K)",
+  lb_ceq = "LBCeq",
+  lbc_1  = "LBC",
+  mg     = "Magnesium (Mg)",
+  mn     = "Manganese (Mn)",
+  p      = "Phosphorus (P)",
+  p_h_2  = "pH",
+  zn     = "Zinc (Zn)"
+)
+
+support_cols <- c(
+  "SP" = "#0072B2",
+  "COMP" = "#009E73"
+)
+
+cross_plot <- cross_dat %>%
+  mutate(
+    nutrient = factor(nutrient, levels = names(nutrient_labs)),
+    site = factor(site, levels = c("ROME", "Watkinsville", "Midville", "Tifton", "Perry")),
+    land_use = factor(land_use, levels = c("Forage", "Cropland")),
+    value_plot = if_else(as.character(nutrient) == "p_h_2", value, log1p(value))
+  )
+
+p_all_sites <- ggplot(cross_plot, aes(x = site, y = value_plot, fill = support)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.alpha = 0.3
+  ) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_fill_manual(values = support_cols) +
+  scale_x_discrete(labels = c(
+    "ROME" = "Rome",
+    "Watkinsville" = "Watkinsville",
+    "Midville" = "Midville",
+    "Tifton" = "Tifton",
+    "Perry" = "Perry"
+  )) +
+  labs(
+    x = NULL,
+    y = "Observed value (log1p-transformed except pH)",
+    fill = "Support",
+    title = "Single-point and composite fertility values across forage and cropland sites",
+    subtitle = "Shown for visual context only; differences may also reflect year, management history, and site-specific conditions"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p_all_sites
+
+make_letters <- function(df) {
+  comps <- df %>%
+    transmute(
+      comparison = paste(group1, group2, sep = "-"),
+      p.adj = p.adj
+    )
+  
+  pvec <- comps$p.adj
+  names(pvec) <- comps$comparison
+  
+  letters <- multcompView::multcompLetters(pvec, threshold = 0.05)$Letters
+  
+  tibble(
+    grp = names(letters),
+    letters = letters
+  )
+}
+
+coastal_plot <- cross_plot %>%
+  filter(site %in% c("Midville", "Tifton", "Perry")) %>%
+  mutate(
+    grp = interaction(site, support, sep = "_"),
+    grp = factor(
+      grp,
+      levels = c(
+        "Midville_SP", "Midville_COMP",
+        "Tifton_SP", "Tifton_COMP",
+        "Perry_SP", "Perry_COMP"
+      )
+    )
+  )
+
+# Dunn tests across the 6 Coastal Plain site-support groups, by nutrient
+cp_dunn <- coastal_plot %>%
+  group_by(nutrient) %>%
+  dunn_test(value_plot ~ grp, p.adjust.method = "BH") %>%
+  ungroup()
+
+cp_letters <- cp_dunn %>%
+  group_by(nutrient) %>%
+  group_modify(~ make_letters(.x)) %>%
+  ungroup()
+
+# positions for letters
+cp_pos <- coastal_plot %>%
+  group_by(nutrient, grp) %>%
+  summarise(
+    y_pos = max(value_plot, na.rm = TRUE) + 0.08 * diff(range(value_plot, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+cp_letters_plot <- cp_letters %>%
+  left_join(cp_pos, by = c("nutrient", "grp")) %>%
+  separate(grp, into = c("site", "support"), sep = "_") %>%
+  mutate(
+    site = factor(site, levels = c("Midville", "Tifton", "Perry")),
+    support = factor(support, levels = c("SP", "COMP")),
+    x = c(
+      "Midville_SP" = 1 - 0.2,
+      "Midville_COMP" = 1 + 0.2,
+      "Tifton_SP" = 2 - 0.2,
+      "Tifton_COMP" = 2 + 0.2,
+      "Perry_SP" = 3 - 0.2,
+      "Perry_COMP" = 3 + 0.2
+    )[paste(site, support, sep = "_")]
+  )
+
+p_cp_sites <- ggplot(coastal_plot, aes(x = site, y = value_plot, fill = support)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.alpha = 0.3
+  ) +
+  geom_text(
+    data = cp_letters_plot,
+    aes(x = as.numeric(x), y = y_pos, label = letters),
+    inherit.aes = FALSE,
+    size = 4.2,
+    fontface = "bold"
+  ) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_fill_manual(values = support_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value (log1p-transformed except pH)",
+    fill = "Support",
+    title = "Coastal Plain comparison of forage and cropland sites",
+    subtitle = "Midville, Tifton, and Perry shown separately; letters indicate significant differences among site-support groups"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 25, l = 15)
+  )
+
+p_cp_sites
+
+landuse_plot <- cross_plot %>%
+  mutate(
+    grp = interaction(land_use, support, sep = "_"),
+    grp = factor(
+      grp,
+      levels = c("Forage_SP", "Forage_COMP", "Cropland_SP", "Cropland_COMP")
+    )
+  )
+
+lu_dunn <- landuse_plot %>%
+  group_by(nutrient) %>%
+  dunn_test(value_plot ~ grp, p.adjust.method = "BH") %>%
+  ungroup()
+
+lu_letters <- lu_dunn %>%
+  group_by(nutrient) %>%
+  group_modify(~ make_letters(.x)) %>%
+  ungroup()
+
+lu_pos <- landuse_plot %>%
+  group_by(nutrient, grp) %>%
+  summarise(
+    y_pos = max(value_plot, na.rm = TRUE) + 0.08 * diff(range(value_plot, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+lu_letters_plot <- lu_letters %>%
+  left_join(lu_pos, by = c("nutrient", "grp")) %>%
+  separate(grp, into = c("land_use", "support"), sep = "_") %>%
+  mutate(
+    land_use = factor(land_use, levels = c("Forage", "Cropland")),
+    support = factor(support, levels = c("SP", "COMP")),
+    x = c(
+      "Forage_SP" = 1 - 0.2,
+      "Forage_COMP" = 1 + 0.2,
+      "Cropland_SP" = 2 - 0.2,
+      "Cropland_COMP" = 2 + 0.2
+    )[paste(land_use, support, sep = "_")]
+  )
+
+p_landuse <- ggplot(landuse_plot, aes(x = land_use, y = value_plot, fill = support)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.alpha = 0.3
+  ) +
+  geom_text(
+    data = lu_letters_plot,
+    aes(x = as.numeric(x), y = y_pos, label = letters),
+    inherit.aes = FALSE,
+    size = 4.2,
+    fontface = "bold"
+  ) +
+  facet_wrap(~ nutrient, scales = "free_y", labeller = as_labeller(nutrient_labs)) +
+  scale_fill_manual(values = support_cols) +
+  labs(
+    x = NULL,
+    y = "Observed value (log1p-transformed except pH)",
+    fill = "Support",
+    title = "Forage versus cropland fertility values by support",
+    subtitle = "Letters indicate significant differences among land use-support groups"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(t = 10, r = 10, b = 25, l = 15)
+  )
+
+p_landuse
+
+ggsave(
+  "../output_do_not_push/fig_all_sites_SP_COMP_context.png",
+  p_all_sites,
+  width = 12,
+  height = 8.5,
+  dpi = 300
+)
+
+ggsave(
+  "../output_do_not_push/fig_coastal_plain_sites_SP_COMP.png",
+  p_cp_sites,
+  width = 12,
+  height = 8.5,
+  dpi = 300
+)
+
+ggsave(
+  "../output_do_not_push/fig_forage_vs_cropland_by_support.png",
+  p_landuse,
+  width = 12,
+  height = 8.5,
+  dpi = 300
+)
+
+# ---------------------------------------------------------
+# 1. Descriptive summaries: all sites
+# ---------------------------------------------------------
+all_sites_summary <- cross_dat %>%
+  group_by(site, support, nutrient) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ---------------------------------------------------------
+# 2. Coastal Plain summaries
+# ---------------------------------------------------------
+coastal_plain_summary <- coastal_plain_dat %>%
+  group_by(site, support, nutrient) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ---------------------------------------------------------
+# 3. Coastal Plain tests
+# compares Midville, Tifton, and Perry separately
+# ---------------------------------------------------------
+coastal_plain_tests <- coastal_plot %>%
+  group_by(nutrient) %>%
+  dunn_test(value_plot ~ grp, p.adjust.method = "BH") %>%
+  ungroup()
+
+# compact significance letters table
+cp_letters_table <- cp_letters %>%
+  separate(grp, into = c("site", "support"), sep = "_") %>%
+  select(nutrient, site, support, letters) %>%
+  arrange(nutrient, site, support)
+
+# ---------------------------------------------------------
+# 4. Land-use summaries
+# ---------------------------------------------------------
+landuse_summary <- cross_dat %>%
+  group_by(land_use, support, nutrient) %>%
+  summarise(
+    n = n(),
+    median = median(value, na.rm = TRUE),
+    IQR = IQR(value, na.rm = TRUE),
+    mean = mean(value, na.rm = TRUE),
+    sd = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ---------------------------------------------------------
+# 5. Land-use tests
+# broader forage vs cropland
+# ---------------------------------------------------------
+landuse_tests <- landuse_plot %>%
+  group_by(nutrient) %>%
+  dunn_test(value_plot ~ grp, p.adjust.method = "BH") %>%
+  ungroup()
+
+lu_letters_table <- lu_letters %>%
+  separate(grp, into = c("land_use", "support"), sep = "_") %>%
+  select(nutrient, land_use, support, letters) %>%
+  arrange(nutrient, land_use, support)
+
+fmt_p <- function(p) {
+  stars <- dplyr::case_when(
+    is.na(p)    ~ "",
+    p <= 0.001  ~ "***",
+    p <= 0.01   ~ "**",
+    p <= 0.05   ~ "*",
+    TRUE        ~ ""
+  )
+  
+  p_txt <- dplyr::case_when(
+    is.na(p)  ~ NA_character_,
+    p < 0.001 ~ format(p, scientific = TRUE, digits = 3),
+    TRUE      ~ format(round(p, 4), nsmall = 4, trim = TRUE)
+  )
+  
+  paste0(p_txt, stars)
+}
+
+# Coastal Plain p-value table
+coastal_plain_p_table <- coastal_plain_tests %>%
+  mutate(
+    contrast = paste(group1, "vs", group2),
+    p_fmt = fmt_p(p.adj)
+  ) %>%
+  select(nutrient, contrast, p_fmt) %>%
+  pivot_wider(names_from = contrast, values_from = p_fmt) %>%
+  arrange(nutrient)
+
+# Land-use p-value table
+landuse_p_table <- landuse_tests %>%
+  mutate(
+    contrast = paste(group1, "vs", group2),
+    p_fmt = fmt_p(p.adj)
+  ) %>%
+  select(nutrient, contrast, p_fmt) %>%
+  pivot_wider(names_from = contrast, values_from = p_fmt) %>%
+  arrange(nutrient)
+
+write_csv(all_sites_summary, "../output_do_not_push/all_sites_summary.csv")
+write_csv(coastal_plain_summary, "../output_do_not_push/coastal_plain_summary.csv")
+write_csv(coastal_plain_tests, "../output_do_not_push/coastal_plain_tests.csv")
+write_csv(cp_letters_table, "../output_do_not_push/coastal_plain_letters_table.csv")
+write_csv(coastal_plain_p_table, "../output_do_not_push/coastal_plain_p_table.csv")
+
+write_csv(landuse_summary, "../output_do_not_push/landuse_summary.csv")
+write_csv(landuse_tests, "../output_do_not_push/landuse_tests.csv")
+write_csv(lu_letters_table, "../output_do_not_push/landuse_letters_table.csv")
+write_csv(landuse_p_table, "../output_do_not_push/landuse_p_table.csv")
+
+all_sites_summary
+coastal_plain_summary
+coastal_plain_p_table
+cp_letters_table
+
+landuse_summary
+landuse_p_table
+lu_letters_table
+```
+```{r}
+#both site normality:
+# =========================================================
+# NORMALITY TABLES: Shapiro-Wilk W + skewness + excess kurtosis
+# =========================================================
+library(moments)
+
+library(kableExtra)
+
+nutrient_order <- c("ca","k","mg","mn","p","zn","p_h_2","lbc_1","lb_ceq")
+nutrient_display <- c(
+  ca = "Calcium (Ca)", k = "Potassium (K)", mg = "Magnesium (Mg)",
+  mn = "Manganese (Mn)", p = "Phosphorus (P)", zn = "Zinc (Zn)",
+  p_h_2 = "pH", lbc_1 = "LBC", lb_ceq = "LBCeq"
+)
+
+compute_sw <- function(df, group_name) {
+  df %>%
+    pivot_longer(cols = all_of(nutrient_order), names_to = "nutrient", values_to = "value") %>%
+    group_by(nutrient) %>%
+    summarise(
+      group = group_name,
+      n = sum(!is.na(value)),
+      W = {
+        v <- na.omit(value)
+        if (length(v) >= 3 & length(v) <= 5000) round(shapiro.test(v)$statistic, 3) else NA_real_
+      },
+      skew = round(moments::skewness(value, na.rm = TRUE), 2),
+      ex_kurt = round(moments::kurtosis(value, na.rm = TRUE) - 3, 2),
+      .groups = "drop"
+    )
+}
+
+# ---------------------------------------------------------
+# TABLE 1: FORAGE
+# Groups: SP A, SP B, Composite 0-10, Composite 10-20
+# ---------------------------------------------------------
+forage_sp_a  <- lime_clean %>% filter(type == "A")
+forage_sp_b  <- lime_clean %>% filter(type == "B")
+forage_c010  <- lime_clean %>% filter(type == "0-4")
+forage_c1020 <- lime_clean %>% filter(type == "4-8")
+
+forage_sp_mean <- lime_wide %>%
+  transmute(
+    ca     = ca_SP_mean,
+    k      = k_SP_mean,
+    mg     = mg_SP_mean,
+    mn     = mn_SP_mean,
+    p      = p_SP_mean,
+    zn     = zn_SP_mean,
+    p_h_2  = p_h_2_SP_mean,
+    lbc_1  = lbc_1_SP_mean,
+    lb_ceq = lb_ceq_SP_mean
+  )
+
+forage_norm <- bind_rows(
+  compute_sw(forage_sp_a,    "SP A"),
+  compute_sw(forage_sp_b,    "SP B"),
+  compute_sw(forage_sp_mean, "SP Mean (A+B)"),      # <-- added
+  compute_sw(forage_c010,    "Composite 0–10 cm"),
+  compute_sw(forage_c1020,   "Composite 10–20 cm")
+) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = nutrient_order),
+    cell = paste0(W, " (", skew, ", ", ex_kurt, ")")
+  ) %>%
+  select(nutrient, group, cell) %>%
+  pivot_wider(names_from = group, values_from = cell) %>%
+  arrange(nutrient) %>%
+  mutate(nutrient = nutrient_display[as.character(nutrient)])
+
+forage_norm %>%
+  kbl(
+    caption = "Forage: Shapiro-Wilk W statistic by sampling type and nutrient (skewness, excess kurtosis in parentheses)",
+    align = "lccccc",
+    booktabs = TRUE,
+    col.names = c("Nutrient", "SP A", "SP B", "SP Mean (A+B)",
+                  "Composite 0–10 cm", "Composite 10–20 cm")
+  ) %>%
+  kable_styling(full_width = FALSE, font_size = 11) %>%
+  footnote(
+    general = "W closer to 1.0 indicates greater conformity to normality. Values in parentheses are skewness and excess kurtosis. Log1p-transformed values used for all nutrients except pH.",
+    general_title = "Note: "
+  )
+# ---------------------------------------------------------
+# TABLE 2: CROPLAND (Perry)
+# Groups: SP (SPID), Composite (CID), Ap truncated 0-15, Full Ap
+# ---------------------------------------------------------
+perry_spid <- fixed_152   # already filtered to SPID in PERRY chunk
+perry_cid  <- fixed_15 %>%
+  filter(type == "CID") %>%
+  transmute(
+    ca = Ca, k = K, mg = Mg, mn = Mn, p = P, zn = Zn,
+    p_h_2 = `pH.2`, lbc_1 = `LBC.1`, lb_ceq = LBCeq
+  )
+
+# apply same log1p transform before testing (match your density plots)
+log_transform <- function(df) {
+  df %>% mutate(across(all_of(setdiff(nutrient_order, "p_h_2")), ~ log1p(.)))
+}
+
+cropland_norm <- bind_rows(
+  compute_sw(log_transform(perry_spid),   "Fixed depth SP (0–15 cm)"),
+  compute_sw(log_transform(perry_cid),    "Composite (0–15 cm)"),
+  compute_sw(log_transform(ap_trunc2),    "Ap truncated 0–15 cm"),
+  compute_sw(log_transform(ap_full_point),"Full Ap")
+) %>%
+  mutate(
+    nutrient = factor(nutrient, levels = nutrient_order),
+    cell = paste0(W, " (", skew, ", ", ex_kurt, ")")
+  ) %>%
+  select(nutrient, group, cell) %>%
+  pivot_wider(names_from = group, values_from = cell) %>%
+  arrange(nutrient) %>%
+  mutate(nutrient = nutrient_display[as.character(nutrient)])
+
+cropland_norm %>%
+  kbl(
+    caption = "Cropland: Shapiro-Wilk W statistic by sampling type and nutrient (skewness, excess kurtosis in parentheses)",
+    align = "lcccc",
+    booktabs = TRUE,
+    col.names = c("Nutrient", "Fixed depth SP (0–15 cm)", "Composite (0–15 cm)",
+                  "Ap truncated 0–15 cm", "Full Ap")
+  ) %>%
+  kable_styling(full_width = FALSE, font_size = 11) %>%
+  footnote(
+    general = "W closer to 1.0 indicates greater conformity to normality. Values in parentheses are skewness and excess kurtosis. Log1p-transformed values used for all nutrients except pH.",
+    general_title = "Note: "
+  )
+
+# Save both as CSV too
+write_csv(forage_norm,   "../output_do_not_push/normality_table_forage.csv")
+write_csv(cropland_norm, "../output_do_not_push/normality_table_cropland.csv")
+
+# Composite sampling consistently produced W values closer to 1.0 and skewness/kurtosis closer to 0 than single-point across both datasets, supporting the visual observation from the density plots. This is most pronounced for Zinc and LBC, where the difference is dramatic.
+```
 
